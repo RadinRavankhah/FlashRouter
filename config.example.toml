@@ -1,0 +1,38 @@
+# Copy this file to %LOCALAPPDATA%\FlashRouter\config.toml and fill in the keys.
+# Never commit config.toml or any file containing real secrets.
+
+[server]
+host = "127.0.0.1"
+port = 8787
+
+[gateway]
+# The key clients must send as: Authorization: Bearer <api_key>
+api_key = "replace-with-a-long-random-gateway-key"
+
+[upstream]
+name = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+protocol = "openai-chat"
+api_key = "replace-with-upstream-key"
+connect_timeout_seconds = 10
+read_timeout_seconds = 180
+verify_tls = true
+# Leave false unless requests must use HTTP_PROXY/HTTPS_PROXY from the environment.
+trust_env = false
+follow_redirects = false
+
+[upstream.headers]
+HTTP-Referer = "https://example.invalid/flashrouter"
+X-OpenRouter-Title = "FlashRouter"
+
+# Client-facing model IDs. /v1/models exposes the `id` values, and requests are
+# rewritten to `upstream_model` before they reach the upstream.
+[[models]]
+id = "coding-fast"
+upstream_model = "qwen/qwen3-coder"
+owned_by = "openrouter"
+
+[[models]]
+id = "coding-smart"
+upstream_model = "anthropic/claude-sonnet-4.5"
+owned_by = "openrouter"
