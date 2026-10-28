@@ -159,12 +159,29 @@ class ModelConfig(BaseModel):
         return self
 
 
+class AdminConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    secret_key: str = ""
+    enabled: bool = True
+
+    @field_validator("secret_key")
+    @classmethod
+    def _default_secret_key(cls, value: str) -> str:
+        if not value.strip():
+            import secrets as _secrets
+
+            return _secrets.token_urlsafe(32)
+        return value
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     server: ServerConfig = Field(default_factory=ServerConfig)
     gateway: GatewayConfig
     upstream: UpstreamConfig
+    admin: AdminConfig = Field(default_factory=AdminConfig)
     models: list[ModelConfig]
     config_path: Path | None = Field(default=None, exclude=True)
     data_dir: Path = Field(default_factory=default_data_dir, exclude=True)
@@ -186,6 +203,9 @@ class Settings(BaseModel):
         if self.upstream.api_key is None:
             return None
         return self.upstream.api_key.get_secret_value()
+
+    def admin_secret_key(self) -> str:
+        return self.admin.secret_key
 
 
 def _env(name: str) -> str | None:
