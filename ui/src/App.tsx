@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { GitBranch, KeyRound, LayoutDashboard, Moon, ScrollText, Server, Settings as SettingsIcon, Sun } from "lucide-react";
-import { KeysPage, OverviewPage, RequestsPage, RoutesPage, SettingsPage, UpstreamsPage } from "./pages";
+import { OverviewPage } from "./overview";
+import { KeysPage, RequestsPage, SettingsPage } from "./pages";
+import { RoutesPage, UpstreamsPage } from "./providers";
 
 const NAV = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },

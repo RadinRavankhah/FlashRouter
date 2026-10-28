@@ -3,6 +3,7 @@
 export type Protocol = "openai-chat" | "openai-responses" | "anthropic-messages";
 export type RequestStatus = "success" | "error" | "interrupted";
 export type CostState = "reported" | "estimated" | "unpriced";
+export type Strategy = "priority" | "weighted" | "round-robin";
 
 export interface Attempt {
   n: number;
@@ -55,6 +56,14 @@ export interface Credential {
   spentMonth: number;
 }
 
+export interface UpstreamModel {
+  id: string;
+  enabled: boolean;
+  inPerM: number | null;
+  outPerM: number | null;
+  contextK: number | null;
+}
+
 export interface Upstream {
   id: string;
   name: string;
@@ -63,12 +72,37 @@ export interface Upstream {
   enabled: boolean;
   timeoutSec: number;
   credentials: Credential[];
+  models: UpstreamModel[];
+}
+
+export interface NewUpstreamInput {
+  name: string;
+  baseUrl: string;
+  protocol: Protocol;
+  timeoutSec: number;
+  apiKey: string;
+}
+
+export interface NewModelInput {
+  id: string;
+  inPerM: number | null;
+  outPerM: number | null;
+  contextK: number | null;
+}
+
+export interface RouteCandidate {
+  id: string;
+  upstreamId: string;
+  model: string;
+  weight: number;
+  enabled: boolean;
 }
 
 export interface Route {
   id: string;
   alias: string;
-  candidates: { upstreamId: string; model: string }[];
+  strategy: Strategy;
+  candidates: RouteCandidate[];
 }
 
 export interface Overview {

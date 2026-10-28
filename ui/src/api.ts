@@ -1,8 +1,9 @@
 // The single seam between the UI and the backend.
-// Today every method is served by mock data. When the backend exists, create
-// an `httpApi` implementing `GatewayApi` with fetch() and export that instead.
+// Every method is served by mock data today. When the backend exists, write an
+// `httpApi` implementing `GatewayApi` with fetch() and export it instead.
 import type {
-  GatewayKey, LogRequest, Overview, RequestStatus, Route, Settings, Upstream,
+  GatewayKey, LogRequest, NewModelInput, NewUpstreamInput, Overview, RequestStatus,
+  Route, Settings, Upstream, UpstreamModel,
 } from "./types";
 
 export interface GatewayApi {
@@ -11,7 +12,12 @@ export interface GatewayApi {
   request(id: string): Promise<LogRequest | undefined>;
   keys(): Promise<GatewayKey[]>;
   upstreams(): Promise<Upstream[]>;
+  createUpstream(input: NewUpstreamInput): Promise<Upstream>;
+  addUpstreamModel(upstreamId: string, input: NewModelInput): Promise<UpstreamModel>;
+  setUpstreamModelEnabled(upstreamId: string, modelId: string, enabled: boolean): Promise<void>;
+  removeUpstreamModel(upstreamId: string, modelId: string): Promise<void>;
   routes(): Promise<Route[]>;
+  saveRoute(route: Route): Promise<Route>;
   settings(): Promise<Settings>;
   testUpstream(id: string): Promise<{ ok: boolean; latencyMs: number; message: string }>;
 }
@@ -20,8 +26,10 @@ export interface GatewayApi {
 
 const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(Math.random() * xs.length)];
 const at = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
+const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 const later = <T,>(make: () => T, ms = 280): Promise<T> =>
   new Promise((resolve) => setTimeout(() => resolve(make()), ms));
+const maskKey = (k: string) => `${k.slice(0, 7)}••••${k.slice(-4)}`;
 
 const KEYS: GatewayKey[] = [
   { id: "key_cc", name: "Claude Code — personal", secret: "gw_live_7f2c9a1e4b8d0c63", enabled: true, models: ["coding-fast", "coding-smart"], monthlyBudget: 40, spentMonth: 18.42, lastUsed: at(-4) },
@@ -29,21 +37,38 @@ const KEYS: GatewayKey[] = [
   { id: "key_scripts", name: "Local scripts", secret: "gw_live_c0ffee1234abcd99", enabled: false, models: ["local-draft"], monthlyBudget: null, spentMonth: 0, lastUsed: null },
 ];
 
-const UPSTREAMS: Upstream[] = [
+let UPSTREAMS: Upstream[] = [
   {
     id: "up_or", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", protocol: "openai-chat", enabled: true, timeoutSec: 120,
     credentials: [
       { id: "cr_main", name: "personal-main", secret: "sk-or-v1-••••a9f2", enabled: true, cooldownUntil: null, lastError: null, spentMonth: 17.9 },
       { id: "cr_backup", name: "personal-backup", secret: "sk-or-v1-••••71be", enabled: true, cooldownUntil: at(12), lastError: "429 rate limited", spentMonth: 0.52 },
     ],
+    models: [
+      { id: "anthropic/claude-sonnet-4.5", enabled: true, inPerM: 3, outPerM: 15, contextK: 200 },
+      { id: "qwen/qwen3-coder", enabled: true, inPerM: 0.3, outPerM: 1.2, contextK: 256 },
+      { id: "deepseek/deepseek-chat", enabled: true, inPerM: 0.27, outPerM: 1.1, contextK: 128 },
+      { id: "openai/gpt-4.1-mini", enabled: false, inPerM: 0.4, outPerM: 1.6, contextK: 1000 },
+    ],
   },
-  { id: "up_local", name: "Local inference", baseUrl: "http://127.0.0.1:1234/v1", protocol: "openai-chat", enabled: true, timeoutSec: 600, credentials: [] },
+  {
+    id: "up_local", name: "Local inference", baseUrl: "http://127.0.0.1:1234/v1", protocol: "openai-chat", enabled: true, timeoutSec: 600, credentials: [],
+    models: [{ id: "llama-3.1-70b-instruct", enabled: true, inPerM: null, outPerM: null, contextK: 128 }],
+  },
 ];
 
-const ROUTES: Route[] = [
-  { id: "r1", alias: "coding-fast", candidates: [{ upstreamId: "up_or", model: "qwen/qwen3-coder" }, { upstreamId: "up_or", model: "deepseek/deepseek-chat" }] },
-  { id: "r2", alias: "coding-smart", candidates: [{ upstreamId: "up_or", model: "anthropic/claude-sonnet-4.5" }] },
-  { id: "r3", alias: "local-draft", candidates: [{ upstreamId: "up_local", model: "llama-3.1-70b-instruct" }] },
+let ROUTES: Route[] = [
+  { id: "r1", alias: "coding-fast", strategy: "priority", candidates: [
+    { id: "c1", upstreamId: "up_or", model: "qwen/qwen3-coder", weight: 1, enabled: true },
+    { id: "c2", upstreamId: "up_or", model: "deepseek/deepseek-chat", weight: 1, enabled: true },
+  ] },
+  { id: "r2", alias: "coding-smart", strategy: "priority", candidates: [
+    { id: "c3", upstreamId: "up_or", model: "anthropic/claude-sonnet-4.5", weight: 1, enabled: true },
+  ] },
+  { id: "r3", alias: "local-draft", strategy: "weighted", candidates: [
+    { id: "c4", upstreamId: "up_local", model: "llama-3.1-70b-instruct", weight: 3, enabled: true },
+    { id: "c5", upstreamId: "up_or", model: "qwen/qwen3-coder", weight: 1, enabled: false },
+  ] },
 ];
 
 const MODELS = [
@@ -154,7 +179,7 @@ function computeOverview(): Overview {
   const daily = Array.from({ length: 14 }, (_, i) => {
     const d = new Date();
     d.setDate(d.getDate() - (13 - i));
-    return { label: d.toLocaleDateString(undefined, { month: "short", day: "numeric" }), value: 4 + Math.random() * 9 };
+    return { label: d.toLocaleDateString(undefined, { month: "short", day: "numeric" }), value: 3 + Math.random() * 9 };
   });
 
   return {
@@ -177,8 +202,57 @@ export const api: GatewayApi = {
   requests: () => later(() => LOGS),
   request: (id) => later(() => LOGS.find((r) => r.id === id)),
   keys: () => later(() => KEYS.map((k) => ({ ...k }))),
-  upstreams: () => later(() => UPSTREAMS),
-  routes: () => later(() => ROUTES),
+
+  upstreams: () => later(() => clone(UPSTREAMS)),
+  createUpstream: (input) =>
+    later(() => {
+      const stamp = Date.now().toString(36);
+      const up: Upstream = {
+        id: `up_${stamp}`,
+        name: input.name,
+        baseUrl: input.baseUrl,
+        protocol: input.protocol,
+        enabled: true,
+        timeoutSec: input.timeoutSec,
+        credentials: input.apiKey
+          ? [{ id: `cr_${stamp}`, name: "primary", secret: maskKey(input.apiKey), enabled: true, cooldownUntil: null, lastError: null, spentMonth: 0 }]
+          : [],
+        models: [],
+      };
+      UPSTREAMS = [...UPSTREAMS, up];
+      return clone(up);
+    }),
+  addUpstreamModel: (upstreamId, input) =>
+    later(() => {
+      const model: UpstreamModel = { enabled: true, ...input };
+      UPSTREAMS = UPSTREAMS.map((u) =>
+        u.id === upstreamId ? { ...u, models: [...u.models.filter((m) => m.id !== model.id), model] } : u
+      );
+      return { ...model };
+    }),
+  setUpstreamModelEnabled: (upstreamId, modelId, enabled) =>
+    later(() => {
+      UPSTREAMS = UPSTREAMS.map((u) =>
+        u.id !== upstreamId ? u : { ...u, models: u.models.map((m) => (m.id === modelId ? { ...m, enabled } : m)) }
+      );
+    }, 150),
+  removeUpstreamModel: (upstreamId, modelId) =>
+    later(() => {
+      UPSTREAMS = UPSTREAMS.map((u) =>
+        u.id !== upstreamId ? u : { ...u, models: u.models.filter((m) => m.id !== modelId) }
+      );
+    }, 150),
+
+  routes: () => later(() => clone(ROUTES)),
+  saveRoute: (route) =>
+    later(() => {
+      const isNew = route.id.startsWith("new_");
+      const saved: Route = { ...route, id: isNew ? `rt_${Date.now().toString(36)}` : route.id };
+      ROUTES = isNew ? [...ROUTES, saved] : ROUTES.map((r) => (r.id === saved.id ? saved : r));
+      return clone(saved);
+    }),
+
   settings: () => later(() => SETTINGS),
-  testUpstream: () => later(() => ({ ok: true, latencyMs: 180 + Math.round(Math.random() * 400), message: "Connected" }), 900),
+  testUpstream: () =>
+    later(() => ({ ok: true, latencyMs: 180 + Math.round(Math.random() * 400), message: "Connected" }), 900),
 };

@@ -2,10 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { ArrowRight, Check, Copy, Eye, EyeOff, Plus, X } from "lucide-react";
 import { api } from "./api";
 import type { GatewayKey, LogRequest, RequestStatus } from "./types";
-import {
-  Badge, BarChart, Card, PageHeader, ProgressBar, Skeleton, StatCard,
-  compact, fmtTime, money, pct, useAsync,
-} from "./components";
+import { Badge, Card, PageHeader, ProgressBar, Skeleton, compact, fmtTime, money, useAsync } from "./components";
 
 // ---------- shared pieces ----------
 
@@ -23,7 +20,7 @@ function CostCell({ r }: { r: LogRequest }) {
   );
 }
 
-function RequestTable({ rows, selectedId, onSelect }: { rows: LogRequest[]; selectedId?: string | null; onSelect?: (id: string) => void }) {
+export function RequestTable({ rows, selectedId, onSelect }: { rows: LogRequest[]; selectedId?: string | null; onSelect?: (id: string) => void }) {
   if (rows.length === 0) return <div className="empty">No requests match these filters.</div>;
   return (
     <div className="table-wrap">
@@ -57,42 +54,6 @@ function RequestTable({ rows, selectedId, onSelect }: { rows: LogRequest[]; sele
         </tbody>
       </table>
     </div>
-  );
-}
-
-// ---------- Overview ----------
-
-export function OverviewPage() {
-  const { data } = useAsync(() => api.overview(), []);
-  if (!data) return (<><PageHeader title="Overview" subtitle="Loading gateway activity…" /><Skeleton /></>);
-  const maxShare = Math.max(...data.modelShare.map((m) => m.cost), 0.0001);
-
-  return (
-    <>
-      <PageHeader title="Overview" subtitle="Spend, usage and reliability at a glance" />
-      <div className="grid stats">
-        <StatCard tone="accent" label="Spend this month" value={money(data.spendMonth)} hint={`${money(data.spendToday)} today`} />
-        <StatCard label="Input tokens" value={compact(data.inputTokens)} hint={`${compact(data.outputTokens)} output`} />
-        <StatCard label="Cache-read share" value={data.cacheReadFraction === null ? "Unknown" : pct(data.cacheReadFraction)} hint="of eligible input tokens" />
-        <StatCard label="Success rate" value={pct(data.successRate)} hint={`${data.active} request(s) in flight`} />
-        <StatCard label="Budget remaining" value={money(data.budgetRemaining)} hint="across gateway keys" />
-      </div>
-      <div className="grid two">
-        <Card title="Spend · last 14 days"><BarChart data={data.daily} format={money} /></Card>
-        <Card title="Cost by model">
-          {data.modelShare.map((m) => (
-            <div className="share-row" key={m.model}>
-              <span className="mono small">{m.model}</span>
-              <ProgressBar value={m.cost} max={maxShare} />
-              <span className="muted small num">{money(m.cost)}</span>
-            </div>
-          ))}
-        </Card>
-      </div>
-      <Card title="Recent requests" className="table-card">
-        <RequestTable rows={data.recent} />
-      </Card>
-    </>
   );
 }
 
@@ -283,106 +244,6 @@ export function KeysPage() {
           })}
         </div>
       )}
-    </>
-  );
-}
-
-// ---------- Upstreams ----------
-
-export function UpstreamsPage() {
-  const { data } = useAsync(() => api.upstreams(), []);
-  const [results, setResults] = useState<Record<string, string>>({});
-
-  const test = async (id: string) => {
-    setResults((r) => ({ ...r, [id]: "Testing…" }));
-    const res = await api.testUpstream(id);
-    setResults((r) => ({ ...r, [id]: res.ok ? `Reachable · ${res.latencyMs} ms` : res.message }));
-  };
-
-  return (
-    <>
-      <PageHeader
-        title="Upstreams"
-        subtitle="Providers and local endpoints the gateway forwards to"
-        actions={<button className="primary"><Plus size={16} /> Add upstream</button>}
-      />
-      {!data ? <Skeleton /> : (
-        <div className="grid cards">
-          {data.map((u) => {
-            const now = Date.now();
-            return (
-              <Card key={u.id} title={u.name} action={<Badge tone="accent">{u.protocol}</Badge>}>
-                <div className="mono small muted" style={{ wordBreak: "break-all" }}>{u.baseUrl}</div>
-                <div style={{ marginTop: 12 }}>
-                  {u.credentials.length === 0 && <div className="muted small">No credentials required</div>}
-                  {u.credentials.map((c) => {
-                    const cooling = !!c.cooldownUntil && new Date(c.cooldownUntil).getTime() > now;
-                    return (
-                      <div className="cred" key={c.id}>
-                        <div>
-                          <div>{c.name}</div>
-                          <div className="mono small muted">{c.secret}</div>
-                          {c.lastError && <div className="small warning-text">{c.lastError}</div>}
-                        </div>
-                        <Badge tone={cooling ? "warning" : "success"}>{cooling ? "cooling down" : "ready"}</Badge>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="card-foot">
-                  <span className="test-result">{results[u.id] ?? `Timeout ${u.timeoutSec}s`}</span>
-                  <button className="ghost" onClick={() => test(u.id)}>Test connection</button>
-                </div>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-    </>
-  );
-}
-
-// ---------- Models & routes ----------
-
-export function RoutesPage() {
-  const { data } = useAsync(
-    async () => ({ routes: await api.routes(), upstreams: await api.upstreams() }),
-    []
-  );
-  if (!data) return (<><PageHeader title="Models & routes" subtitle="Loading…" /><Skeleton /></>);
-  const upstreamName = (id: string) => data.upstreams.find((u) => u.id === id)?.name ?? id;
-
-  return (
-    <>
-      <PageHeader
-        title="Models & routes"
-        subtitle="Aliases resolve to ordered candidates. Fallback happens only before the first streamed byte."
-        actions={<button className="primary"><Plus size={16} /> New alias</button>}
-      />
-      <div className="grid cards">
-        {data.routes.map((r) => (
-          <Card
-            key={r.id}
-            title={<span className="mono">{r.alias}</span>}
-            action={<span className="muted small">{r.candidates.length} candidate{r.candidates.length === 1 ? "" : "s"}</span>}
-          >
-            <div className="flow">
-              {r.candidates.map((c, i) => (
-                <Fragment key={`${c.model}-${i}`}>
-                  {i > 0 && <ArrowRight className="arrow" size={18} />}
-                  <div className="candidate">
-                    <span className="ord">{i + 1}</span>
-                    <div>
-                      <div className="mono small">{c.model}</div>
-                      <div className="muted small">{upstreamName(c.upstreamId)}</div>
-                    </div>
-                  </div>
-                </Fragment>
-              ))}
-            </div>
-          </Card>
-        ))}
-      </div>
     </>
   );
 }
