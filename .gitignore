@@ -1,1 +1,22 @@
 /ui/node_modules
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+htmlcov/
+.coverage
+
+# Local configuration and runtime data
+config.toml
+*.local.toml
+.env
+logs/
+data/
+diagnostics/
