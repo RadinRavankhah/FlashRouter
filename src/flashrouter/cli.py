@@ -17,6 +17,7 @@ from flashrouter.config import (
     ConfigError,
     Settings,
     ensure_data_dirs,
+    is_configured,
     load_config,
     mask_secret,
 )
@@ -55,9 +56,23 @@ def _build_parser() -> argparse.ArgumentParser:
 def _load_or_report(path: Path | None) -> Settings | None:
     try:
         return load_config(path)
-    except ConfigError as exc:
-        print(f"Configuration error:\n{exc}", file=sys.stderr)
-        return None
+    except ConfigError:
+        # No config yet: return default settings for setup mode.
+        from flashrouter.config import (
+            AdminConfig,
+            GatewayConfig,
+            ServerConfig,
+            UpstreamConfig,
+            resolve_config_path,
+        )
+        return Settings(
+            server=ServerConfig(),
+            gateway=GatewayConfig(),
+            upstream=UpstreamConfig(name="upstream", base_url="", protocol="openai-chat"),
+            admin=AdminConfig(),
+            models=[],
+            config_path=resolve_config_path(path),
+        )
 
 
 def _check_writable(settings: Settings) -> bool:
@@ -104,12 +119,11 @@ async def _probe_upstream(settings: Settings) -> int:
 
 def _run_doctor(args: argparse.Namespace) -> int:
     settings = _load_or_report(args.config)
-    if settings is None:
-        return 2
 
     print(f"Config: {settings.config_path}")
     print(f"Data directory: {settings.data_dir}")
     print(f"Server: http://{settings.server.host}:{settings.server.port}")
+    print(f"Configured: {is_configured(settings)}")
     print(f"Gateway key: {mask_secret(settings.gateway_api_key())}")
     print(f"Upstream: {settings.upstream.name} ({settings.upstream.base_url})")
     print(f"Upstream key: {mask_secret(settings.upstream_api_key())}")
@@ -128,8 +142,6 @@ def _run_doctor(args: argparse.Namespace) -> int:
 
 def _run_server(args: argparse.Namespace) -> int:
     settings = _load_or_report(args.config)
-    if settings is None:
-        return 2
 
     if args.host:
         settings.server.host = args.host

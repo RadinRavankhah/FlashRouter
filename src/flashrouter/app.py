@@ -15,7 +15,16 @@ from flashrouter import __version__
 from flashrouter.api.admin import router as admin_router
 from flashrouter.api.inference import router as inference_router
 from flashrouter.api.models import router as models_router
-from flashrouter.config import Settings, ensure_data_dirs
+from flashrouter.config import (
+    AdminConfig,
+    GatewayConfig,
+    ServerConfig,
+    Settings,
+    UpstreamConfig,
+    ensure_data_dirs,
+    is_configured,
+    resolve_config_path,
+)
 from flashrouter.core.contracts import NullUsageAccountant
 from flashrouter.errors import GatewayError, error_body
 from flashrouter.logging import (
@@ -33,6 +42,22 @@ from flashrouter.transport.http import HttpxTransport, create_http_client
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 UI_DIST_DIR = PROJECT_ROOT / "ui" / "dist"
+
+
+def _build_default_settings() -> Settings:
+    """Build a default settings object when no config.toml exists (setup mode)."""
+    return Settings(
+        server=ServerConfig(),
+        gateway=GatewayConfig(),
+        upstream=UpstreamConfig(
+            name="upstream",
+            base_url="",
+            protocol="openai-chat",
+        ),
+        admin=AdminConfig(),
+        models=[],
+        config_path=resolve_config_path(),
+    )
 
 
 def create_app(
@@ -73,11 +98,10 @@ def create_app(
         app.state.model_resolver = resolver
         app.state.adapter = adapter
         logger.info(
-            "gateway_started host=%s port=%s upstream=%s models=%s",
+            "gateway_started host=%s port=%s configured=%s",
             settings.server.host,
             settings.server.port,
-            settings.upstream.base_url,
-            len(settings.models),
+            is_configured(settings),
         )
         try:
             yield
@@ -142,7 +166,7 @@ def create_app(
 
     @app.get("/healthz", tags=["health"])
     async def healthz() -> dict[str, str]:
-        return {"status": "ok", "version": __version__}
+        return {"status": "ok", "version": __version__, "configured": str(is_configured(settings))}
 
     # Single-page application fallback: serve index.html for any non-API path
     # so React Router can handle client-side routing.

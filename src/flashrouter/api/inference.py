@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 from starlette.responses import Response
 
-from flashrouter.auth import require_gateway_key
-from flashrouter.errors import GatewayError, invalid_request
+from flashrouter.errors import invalid_request
 from flashrouter.storage.repository import RequestRepository
 
 router = APIRouter(prefix="/v1", tags=["inference"])
@@ -23,7 +22,7 @@ def _get_repository(request: Request) -> RequestRepository:
     return repo
 
 
-@router.post("/chat/completions", dependencies=[Depends(require_gateway_key)])
+@router.post("/chat/completions")
 async def chat_completions(request: Request) -> Response:
     raw_body = await request.body()
     try:
@@ -57,6 +56,8 @@ async def chat_completions(request: Request) -> Response:
             body_bytes=raw_body,
         )
     except Exception as exc:
+        from flashrouter.errors import GatewayError
+
         raise GatewayError(
             status_code=500,
             message="Request history storage failed",

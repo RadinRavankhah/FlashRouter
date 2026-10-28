@@ -1,7 +1,6 @@
 // The single seam between the UI and the backend.
 // Implements GatewayApi with fetch() against the FastAPI admin API.
-// Admin endpoints require a JWT obtained via POST /admin/login with the
-// gateway API key. The token is held in memory (not localStorage).
+// No authentication: this is a local dev tool bound to localhost by default.
 import type {
   GatewayKey,
   LogRequest,
@@ -16,45 +15,72 @@ import type {
 } from "./types";
 
 export interface GatewayApi {
-  login(apiKey: string): Promise<{ access_token: string; token_type: string }>;
-  logout(): void;
-  isAuthenticated(): boolean;
+  setupStatus(): Promise<{ configured: boolean }>;
+  setupSave(body: {
+    gateway_api_key?: string;
+    upstream_name?: string;
+    upstream_base_url: string;
+    upstream_api_key?: string;
+    models: Array<{ id: string; upstream_model?: string; owned_by?: string }>;
+  }): Promise<{ ok: boolean; message: string }>;
+
+  // Providers
+  listProviders(): Promise<{ providers: any[] }>;
+  createProvider(body: any): Promise<{ id: string; ok: boolean }>;
+  getProvider(id: string): Promise<any>;
+  updateProvider(id: string, body: any): Promise<{ ok: boolean }>;
+  deleteProvider(id: string): Promise<{ ok: boolean }>;
+
+  // Credentials
+  listCredentials(): Promise<{ credentials: any[] }>;
+  createCredential(body: any): Promise<{ id: string; ok: boolean }>;
+  getCredential(id: string): Promise<any>;
+  updateCredential(id: string, body: any): Promise<{ ok: boolean }>;
+  deleteCredential(id: string): Promise<{ ok: boolean }>;
+
+  // Gateway keys
+  listKeys(): Promise<{ keys: any[] }>;
+  createKey(body: any): Promise<{ id: string; ok: boolean }>;
+  getKey(id: string): Promise<any>;
+  updateKey(id: string, body: any): Promise<{ ok: boolean }>;
+  deleteKey(id: string): Promise<{ ok: boolean }>;
+
+  // DB models
+  listModels(): Promise<{ models: any[] }>;
+  createModel(body: any): Promise<{ id: string; ok: boolean }>;
+  getModel(id: string): Promise<any>;
+  updateModel(id: string, body: any): Promise<{ ok: boolean }>;
+  deleteModel(id: string): Promise<{ ok: boolean }>;
+
+  // Aliases
+  listAliases(): Promise<{ aliases: any[] }>;
+  createAlias(body: any): Promise<{ id: string; ok: boolean }>;
+  getAlias(id: string): Promise<any>;
+  updateAlias(id: string, body: any): Promise<{ ok: boolean }>;
+  deleteAlias(id: string): Promise<{ ok: boolean }>;
+
+  // Requests / stats / health
   overview(): Promise<Overview>;
   requests(): Promise<LogRequest[]>;
   request(id: string): Promise<LogRequest | undefined>;
-  keys(): Promise<GatewayKey[]>;
-  upstreams(): Promise<Upstream[]>;
-  createUpstream(input: NewUpstreamInput): Promise<Upstream>;
-  addUpstreamModel(upstreamId: string, input: NewModelInput): Promise<UpstreamModel>;
-  setUpstreamModelEnabled(upstreamId: string, modelId: string, enabled: boolean): Promise<void>;
-  removeUpstreamModel(upstreamId: string, modelId: string): Promise<void>;
-  routes(): Promise<Route[]>;
-  saveRoute(route: Route): Promise<Route>;
   settings(): Promise<Settings>;
-  testUpstream(id: string): Promise<{ ok: boolean; latencyMs: number; message: string }>;
 }
 
-// ---------- auth ----------
+// ---------- http helper ----------
 
-let token: string | null = null;
-
-export function setAuthToken(value: string | null) {
-  token = value;
-}
-
-export function getAuthToken(): string | null {
-  return token;
-}
-
-async function http(input: RequestInfo, init?: RequestInit): Promise<Response> {
-  const headers = new Headers(init?.headers ?? {});
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(input, { ...init, headers });
-  if (res.status === 401) {
-    token = null;
-    throw new Error("Unauthorized");
+async function json<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const res = await fetch(input, init);
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const err = await res.json();
+      detail = err.message || err.detail || JSON.stringify(err);
+    } catch {
+      detail = res.statusText;
+    }
+    throw new Error(`HTTP ${res.status}: ${detail}`);
   }
-  return res;
+  return (await res.json()) as T;
 }
 
 function mapStatus(
@@ -104,8 +130,8 @@ function mapRequest(row: any): LogRequest {
     ttftMs: row.ttft_ms,
     attempts: attempts.map((a: any, i: number) => ({
       n: i + 1,
-      upstream: row.model_id,
-      credential: row.gateway_key_id,
+      upstream: a.provider_name ?? row.model_id,
+      credential: a.credential_id ?? "default",
       model: a.upstream_model ?? row.model_id,
       httpStatus: a.status_code,
       durationMs: a.duration_ms ?? 0,
@@ -118,57 +144,154 @@ function mapRequest(row: any): LogRequest {
 
 // ---------- httpApi ----------
 
-const later = <T>(make: () => T, ms = 0): Promise<T> =>
-  new Promise((resolve) => setTimeout(() => resolve(make()), ms));
-
 export const api: GatewayApi = {
-  async login(apiKey: string) {
-    const res = await fetch("/admin/login", {
+  async setupStatus() {
+    return json<{ configured: boolean }>("/admin/setup/status");
+  },
+
+  async setupSave(body) {
+    return json<{ ok: boolean; message: string }>("/admin/setup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ api_key: apiKey }),
+      body: JSON.stringify(body),
     });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`Login failed: ${res.status} ${text}`);
-    }
-    const data = await res.json();
-    token = data.access_token;
-    return { access_token: data.access_token, token_type: data.token_type ?? "bearer" };
   },
 
-  logout() {
-    token = null;
+  // Providers
+  async listProviders() {
+    return json<{ providers: any[] }>("/admin/v1/providers");
+  },
+  async createProvider(body) {
+    return json<{ id: string; ok: boolean }>("/admin/v1/providers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  async getProvider(id: string) {
+    return json<any>(`/admin/v1/providers/${id}`);
+  },
+  async updateProvider(id: string, body: any) {
+    return json<{ ok: boolean }>(`/admin/v1/providers/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  async deleteProvider(id: string) {
+    return json<{ ok: boolean }>(`/admin/v1/providers/${id}`, { method: "DELETE" });
   },
 
-  isAuthenticated() {
-    return token !== null;
+  // Credentials
+  async listCredentials() {
+    return json<{ credentials: any[] }>("/admin/v1/credentials");
+  },
+  async createCredential(body: any) {
+    return json<{ id: string; ok: boolean }>("/admin/v1/credentials", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  async getCredential(id: string) {
+    return json<any>(`/admin/v1/credentials/${id}`);
+  },
+  async updateCredential(id: string, body: any) {
+    return json<{ ok: boolean }>(`/admin/v1/credentials/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  async deleteCredential(id: string) {
+    return json<{ ok: boolean }>(`/admin/v1/credentials/${id}`, {
+      method: "DELETE",
+    });
   },
 
+  // Gateway keys
+  async listKeys() {
+    return json<{ keys: any[] }>("/admin/v1/keys");
+  },
+  async createKey(body: any) {
+    return json<{ id: string; ok: boolean }>("/admin/v1/keys", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  async getKey(id: string) {
+    return json<any>(`/admin/v1/keys/${id}`);
+  },
+  async updateKey(id: string, body: any) {
+    return json<{ ok: boolean }>(`/admin/v1/keys/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  async deleteKey(id: string) {
+    return json<{ ok: boolean }>(`/admin/v1/keys/${id}`, { method: "DELETE" });
+  },
+
+  // DB models
+  async listModels() {
+    return json<{ models: any[] }>("/admin/v1/dbmodels");
+  },
+  async createModel(body: any) {
+    return json<{ id: string; ok: boolean }>("/admin/v1/dbmodels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  async getModel(id: string) {
+    return json<any>(`/admin/v1/dbmodels/${id}`);
+  },
+  async updateModel(id: string, body: any) {
+    return json<{ ok: boolean }>(`/admin/v1/dbmodels/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  async deleteModel(id: string) {
+    return json<{ ok: boolean }>(`/admin/v1/dbmodels/${id}`, { method: "DELETE" });
+  },
+
+  // Aliases
+  async listAliases() {
+    return json<{ aliases: any[] }>("/admin/v1/aliases");
+  },
+  async createAlias(body: any) {
+    return json<{ id: string; ok: boolean }>("/admin/v1/aliases", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  async getAlias(id: string) {
+    return json<any>(`/admin/v1/aliases/${id}`);
+  },
+  async updateAlias(id: string, body: any) {
+    return json<{ ok: boolean }>(`/admin/v1/aliases/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  },
+  async deleteAlias(id: string) {
+    return json<{ ok: boolean }>(`/admin/v1/aliases/${id}`, { method: "DELETE" });
+  },
+
+  // Requests / stats / health
   async overview(): Promise<Overview> {
-    if (!token) {
-      return later(() => ({
-        spendToday: 0,
-        spendMonth: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadFraction: null,
-        successRate: 0,
-        active: 0,
-        budgetRemaining: 0,
-        daily: [],
-        modelShare: [],
-        recent: [],
-      }));
-    }
-    const res = await http("/admin/v1/stats");
-    const data = await res.json();
-    const total = data.total ?? 0;
-    const success = data.success ?? 0;
-    const interrupted = data.interrupted ?? 0;
-    const errors = data.error ?? 0;
-    const nonError = total - errors;
-    return later(() => ({
+    const stats = await json<{ total: number; success: number; interrupted: number; error: number }>(
+      "/admin/v1/stats",
+    );
+    const total = stats.total ?? 0;
+    const success = stats.success ?? 0;
+    return {
       spendToday: 0,
       spendMonth: 0,
       inputTokens: 0,
@@ -180,91 +303,37 @@ export const api: GatewayApi = {
       daily: [],
       modelShare: [],
       recent: [],
-    }));
+    };
   },
 
   async requests(): Promise<LogRequest[]> {
-    if (!token) return later(() => []);
-    const res = await http("/admin/v1/requests?limit=100&offset=0");
-    const data = await res.json();
+    const data = await json<{ requests: any[] }>("/admin/v1/requests?limit=100&offset=0");
     const rows: any[] = data.requests ?? [];
-    return later(() => rows.map(mapRequest));
+    return rows.map(mapRequest);
   },
 
   async request(id: string): Promise<LogRequest | undefined> {
-    if (!token) return later(() => undefined);
-    const res = await http(`/admin/v1/requests/${id}`);
-    if (res.status === 404) return later(() => undefined);
-    const data = await res.json();
+    const res = await fetch(`/admin/v1/requests/${id}`);
+    if (res.status === 404) return undefined;
+    const data = await json<{ request: any }>(res as any);
     const row = data.request;
-    if (!row) return later(() => undefined);
-    return later(() => mapRequest(row));
-  },
-
-  async keys(): Promise<GatewayKey[]> {
-    return later(() => []);
-  },
-
-  async upstreams(): Promise<Upstream[]> {
-    return later(() => []);
-  },
-
-  async createUpstream() {
-    throw new Error("Upstream management is not available in v0.2");
-  },
-
-  async addUpstreamModel() {
-    throw new Error("Upstream model management is not available in v0.2");
-  },
-
-  async setUpstreamModelEnabled() {
-    throw new Error("Upstream model management is not available in v0.2");
-  },
-
-  async removeUpstreamModel() {
-    throw new Error("Upstream model management is not available in v0.2");
-  },
-
-  async routes(): Promise<Route[]> {
-    return later(() => []);
-  },
-
-  async saveRoute() {
-    throw new Error("Route management is not available in v0.2");
+    if (!row) return undefined;
+    return mapRequest(row);
   },
 
   async settings(): Promise<Settings> {
-    if (!token) {
-      return later(() => ({
-        dataDir: "",
-        dbSizeMb: 0,
-        bodySizeMb: 0,
-        diskTotalGb: 0,
-        diskFreeGb: 0,
-        encryption: "off",
-        bindAddress: "127.0.0.1",
-        port: 8787,
-        loggingHealthy: false,
-        lastBackup: new Date().toISOString(),
-      }));
-    }
-    const res = await http("/admin/v1/health");
-    const data = await res.json();
-    return later(() => ({
+    const health = await json<any>("/admin/v1/health");
+    return {
       dataDir: "",
-      dbSizeMb: data.db_size_mb ?? 0,
+      dbSizeMb: health.db_size_mb ?? 0,
       bodySizeMb: 0,
-      diskTotalGb: data.disk_total_gb ?? 0,
-      diskFreeGb: data.disk_free_gb ?? 0,
+      diskTotalGb: health.disk_total_gb ?? 0,
+      diskFreeGb: health.disk_free_gb ?? 0,
       encryption: "off",
       bindAddress: "127.0.0.1",
       port: 8787,
-      loggingHealthy: data.logging_healthy ?? false,
+      loggingHealthy: health.logging_healthy ?? false,
       lastBackup: new Date().toISOString(),
-    }));
-  },
-
-  async testUpstream() {
-    return later(() => ({ ok: false, latencyMs: 0, message: "Not available in v0.2" }));
+    };
   },
 };

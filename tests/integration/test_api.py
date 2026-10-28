@@ -10,27 +10,37 @@ from tests.conftest import StaticStream, auth_headers, gateway_client, make_sett
 
 
 @pytest.mark.anyio
-async def test_missing_or_wrong_gateway_key_is_rejected(tmp_path: Path) -> None:
+async def test_no_auth_required_for_inference(tmp_path: Path) -> None:
     calls: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         calls.append(request)
-        return httpx.Response(200, json={})
-
-    async with gateway_client(make_settings(tmp_path), handler) as (client, _):
-        missing = await client.get("/v1/models")
-        wrong = await client.get("/v1/models", headers=auth_headers("wrong-key"))
-        chat = await client.post(
-            "/v1/chat/completions",
-            json={"model": "coding-fast", "messages": []},
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl_test",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "pong"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
         )
 
-    assert missing.status_code == 401
-    assert missing.json()["error"]["code"] == "invalid_api_key"
-    assert missing.headers["www-authenticate"] == "Bearer"
-    assert wrong.status_code == 401
-    assert chat.status_code == 401
-    assert calls == []
+    settings = make_settings(tmp_path)
+    async with gateway_client(settings, handler) as (client, _):
+        # No auth headers needed
+        chat = await client.post(
+            "/v1/chat/completions",
+            json={"model": "coding-fast", "messages": [{"role": "user", "content": "ping"}]},
+        )
+
+    assert chat.status_code == 200
+    assert chat.json()["choices"][0]["message"]["content"] == "pong"
+    assert len(calls) == 1
 
 
 @pytest.mark.anyio
@@ -38,21 +48,46 @@ async def test_models_endpoint_lists_configured_aliases(tmp_path: Path) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("models endpoint must not contact upstream")
 
-    async with gateway_client(make_settings(tmp_path), handler) as (client, _):
+    settings = make_settings(tmp_path)
+    async with gateway_client(settings, handler) as (client, app):
+        repo = app.state.request_repository
+        assert repo is not None
+        # Seed an alias matching settings.models
+        await repo.create_provider(
+            provider_id="prov_1",
+            name="mock-upstream",
+            base_url="https://upstream.test/v1",
+            protocol="openai-chat",
+            enabled=True,
+        )
+        await repo.create_provider_credential(
+            credential_id="cred_1",
+            provider_id="prov_1",
+            name="primary",
+            secret="sk-test",
+            enabled=True,
+        )
+        await repo.create_db_model(
+            model_id="model_1",
+            provider_id="prov_1",
+            credential_id="cred_1",
+            upstream_model="real-model",
+            enabled=True,
+        )
+        await repo.create_model_alias(
+            alias_id="alias_1",
+            alias="coding-fast",
+            db_model_id="model_1",
+            enabled=True,
+        )
+
         response = await client.get("/v1/models", headers=auth_headers())
 
     assert response.status_code == 200
-    assert response.json() == {
-        "object": "list",
-        "data": [
-            {
-                "id": "coding-fast",
-                "object": "model",
-                "created": 0,
-                "owned_by": "mock",
-            }
-        ],
-    }
+    data = response.json()
+    assert data["object"] == "list"
+    ids = [m["id"] for m in data["data"]]
+    assert "coding-fast" in ids
 
 
 @pytest.mark.anyio

@@ -11,8 +11,7 @@ Here’s the roadmap I recommend.
 | Version | Main goal | What becomes usable |
 |---|---|---|
 | **v0.1** | Reliable lightweight proxy | OpenAI SDKs and compatible Chat Completions clients |
-| **v0.2** | Full request history | Inspect requests, responses, streams, and errors |
-| **v0.3** | Manage everything in the dashboard | Upstreams, credentials, client keys, and models |
+| **v0.2** | Full request history | Inspect requests, responses, streams, and errors || **v0.3** | Manage everything in the dashboard | Upstreams, credentials, client keys, and models |
 | **v0.4** | Useful cost and usage analytics | Understand spending, tokens, and cache usage |
 | **v0.5** | Control access and spending | Model restrictions and per-key budgets |
 | **v0.6** | Reliable routing | Aliases, credential rotation, retries, fallbacks |
@@ -171,7 +170,7 @@ Do not save authorization headers or duplicate API secrets in logs.
 ### Basic dashboard
 
 - Static React/Vite frontend served by FastAPI.
-- Minimal admin authentication.
+- No authentication (local dev tool bound to localhost by default).
 - Request-history table.
 - Request-detail page.
 - Readable JSON/text views.
@@ -272,8 +271,7 @@ Add those as filters and detail-page links.
 
 ### Admin security baseline
 
-- Admin sessions separate from inference keys.
-- Localhost binding by default.
+- Localhost binding by default (`127.0.0.1`). Not a multi-user service.
 - CSRF/origin protections.
 - No secret storage in browser local storage.
 - Plaintext secret storage, clearly disclosed.

@@ -1,25 +1,50 @@
 import { useEffect, useState } from "react";
-import { NavLink, Route, Routes } from "react-router-dom";
+import { NavLink, Route, Routes, useNavigate } from "react-router-dom";
 import { GitBranch, KeyRound, LayoutDashboard, Moon, ScrollText, Server, Settings as SettingsIcon, Sun } from "lucide-react";
 import { OverviewPage } from "./overview";
-import { KeysPage, RequestsPage, SettingsPage } from "./pages";
-import { RoutesPage, UpstreamsPage } from "./providers";
+import { SetupPage, ProvidersPage, CredentialsPage, KeysPage, RequestsPage, SettingsPage, RoutesPage } from "./pages";
 
 const NAV = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/requests", label: "Requests", icon: ScrollText, end: false },
   { to: "/keys", label: "Gateway keys", icon: KeyRound, end: false },
-  { to: "/upstreams", label: "Upstreams", icon: Server, end: false },
-  { to: "/routes", label: "Models & routes", icon: GitBranch, end: false },
+  { to: "/providers", label: "Providers", icon: Server, end: false },
+  { to: "/credentials", label: "Credentials", icon: KeyRound, end: false },
+  { to: "/routes", label: "Models & aliases", icon: GitBranch, end: false },
   { to: "/settings", label: "Settings", icon: SettingsIcon, end: false },
 ];
 
 export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    fetch("/admin/setup/status")
+      .then((r) => r.json())
+      .then((s) => {
+        setConfigured(s.configured);
+        if (!s.configured && window.location.pathname !== "/setup") {
+          navigate("/setup");
+        }
+      });
+  }, [navigate]);
+
+  if (configured === null) {
+    return (
+      <div className="app">
+        <div style={{ padding: "40px", textAlign: "center" }}>Loading…</div>
+      </div>
+    );
+  }
+
+  if (configured === false) {
+    return <SetupPage />;
+  }
 
   return (
     <div className="app">
@@ -56,7 +81,8 @@ export default function App() {
           <Route path="/" element={<OverviewPage />} />
           <Route path="/requests" element={<RequestsPage />} />
           <Route path="/keys" element={<KeysPage />} />
-          <Route path="/upstreams" element={<UpstreamsPage />} />
+          <Route path="/providers" element={<ProvidersPage />} />
+          <Route path="/credentials" element={<CredentialsPage />} />
           <Route path="/routes" element={<RoutesPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>

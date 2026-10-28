@@ -69,13 +69,13 @@ class ServerConfig(BaseModel):
 class GatewayConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    api_key: SecretStr
+    api_key: SecretStr | None = None
 
     @field_validator("api_key")
     @classmethod
-    def api_key_must_not_be_blank(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
-            raise ValueError("gateway.api_key must not be blank")
+    def normalize_empty_api_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None or not value.get_secret_value().strip():
+            return None
         return value
 
 
@@ -338,3 +338,66 @@ def mask_secret(secret: str | None) -> str:
     if len(secret) <= 8:
         return "*" * len(secret)
     return f"{secret[:4]}...{secret[-4:]}"
+
+
+def is_configured(settings: Settings) -> bool:
+    """Return True if a config file exists and has a gateway API key."""
+    if not settings.config_path or not settings.config_path.exists():
+        return False
+    if settings.gateway.api_key is None:
+        return False
+    return bool(settings.gateway.api_key.get_secret_value().strip())
+
+
+def save_config(settings: Settings) -> None:
+    """Persist Settings to TOML at config_path."""
+    config_path = settings.config_path or resolve_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines: list[str] = []
+
+    lines.append("[server]")
+    lines.append(f'host = "{settings.server.host}"')
+    lines.append(f"port = {settings.server.port}")
+    lines.append(f'log_level = "{settings.server.log_level}"')
+    lines.append("")
+
+    lines.append("[gateway]")
+    if settings.gateway.api_key is not None:
+        lines.append(f'api_key = "{settings.gateway.api_key.get_secret_value()}"')
+    lines.append("")
+
+    lines.append("[upstream]")
+    lines.append(f'name = "{settings.upstream.name}"')
+    lines.append(f'base_url = "{settings.upstream.base_url}"')
+    lines.append(f'protocol = "{settings.upstream.protocol}"')
+    if settings.upstream.api_key is not None:
+        lines.append(f'api_key = "{settings.upstream.api_key.get_secret_value()}"')
+    lines.append(f"connect_timeout_seconds = {settings.upstream.connect_timeout_seconds}")
+    lines.append(f"read_timeout_seconds = {settings.upstream.read_timeout_seconds}")
+    lines.append(f"verify_tls = {str(settings.upstream.verify_tls).lower()}")
+    lines.append(f"trust_env = {str(settings.upstream.trust_env).lower()}")
+    lines.append(f"follow_redirects = {str(settings.upstream.follow_redirects).lower()}")
+    if settings.upstream.headers:
+        lines.append("[upstream.headers]")
+        for k, v in settings.upstream.headers.items():
+            lines.append(f'{k} = "{v}"')
+    lines.append("")
+
+    lines.append("[admin]")
+    lines.append(f'secret_key = "{settings.admin.secret_key}"')
+    lines.append(f"enabled = {str(settings.admin.enabled).lower()}")
+    lines.append("")
+
+    for m in settings.models:
+        lines.append("[[models]]")
+        lines.append(f'id = "{m.id}"')
+        lines.append(f'upstream_model = "{m.upstream_model}"')
+        if m.owned_by is not None:
+            lines.append(f'owned_by = "{m.owned_by}"')
+        lines.append(f"created = {m.created}")
+        lines.append("")
+
+    with config_path.open("w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines))
+

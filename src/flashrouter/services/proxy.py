@@ -1,4 +1,4 @@
-"""Core Chat Completions proxy behavior."""
+"""Core Chat Completions proxy behavior with dynamic provider resolution."""
 
 from __future__ import annotations
 
@@ -18,13 +18,18 @@ from flashrouter.core.contracts import (
     UpstreamTransport,
     UsageAccountant,
 )
-from flashrouter.errors import upstream_connection_error, upstream_timeout_error
+from flashrouter.errors import (
+    invalid_request,
+    upstream_connection_error,
+    upstream_timeout_error,
+)
 from flashrouter.logging import get_logger
 from flashrouter.storage.repository import RequestRepository
 from flashrouter.transport.headers import (
     build_upstream_headers,
     filter_response_headers,
 )
+from flashrouter.transport.http import HttpxTransport
 from flashrouter.transport.urls import join_upstream_url
 
 
@@ -125,11 +130,12 @@ class ChatCompletionsProxy:
         self._settings = settings
         self._resolver = resolver
         self._adapter = adapter
-        self._transport = transport
+        self._default_transport = transport
         self._request_log = request_log
         self._usage_accountant = usage_accountant
         self._repository = repository
         self._logger = get_logger()
+        self._client_cache: dict[str, httpx.AsyncClient] = {}
 
     def _record(self, event: Mapping[str, Any]) -> None:
         try:
@@ -158,31 +164,152 @@ class ChatCompletionsProxy:
                 "storage_persist_failed operation=%s request_id=%s", operation, request_id
             )
 
-    def _build_request(self, body: Mapping[str, Any], *, stream: bool) -> httpx.Request:
-        url = join_upstream_url(
-            self._settings.upstream.base_url,
-            self._adapter.chat_path(),
+    async def _get_transport_for_provider(
+        self,
+        provider: dict[str, Any] | None,
+    ) -> UpstreamTransport:
+        """Get or create an UpstreamTransport for a provider."""
+        if provider is None:
+            return self._default_transport
+
+        provider_id = provider["id"]
+        if provider_id in self._client_cache:
+            return HttpxTransport(self._client_cache[provider_id])
+
+        headers = {}
+        try:
+            import json as _json
+
+            headers = _json.loads(provider.get("headers") or "{}")
+        except Exception:
+            headers = {}
+
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=provider.get("connect_timeout_seconds") or 10.0,
+                read=provider.get("read_timeout_seconds") or 180.0,
+            ),
+            verify=bool(provider.get("verify_tls", 1)),
+            trust_env=bool(provider.get("trust_env", 0)),
+            follow_redirects=bool(provider.get("follow_redirects", 0)),
+            headers=headers,
         )
+        self._client_cache[provider_id] = client
+        return HttpxTransport(client)
+
+    def _build_request(
+        self,
+        body: Mapping[str, Any],
+        *,
+        stream: bool,
+        base_url: str,
+        adapter_path: str,
+        api_key: str | None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> httpx.Request:
+        url = join_upstream_url(base_url, adapter_path)
         headers = build_upstream_headers(
             self._settings.upstream,
-            self._settings.upstream_api_key(),
+            api_key,
             stream=stream,
         )
+        if extra_headers:
+            for k, v in extra_headers.items():
+                headers[k] = v
         content = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         return httpx.Request("POST", url, headers=headers, content=content)
 
-    def _prepare(
+    def _prepare_legacy(
         self,
         payload: Any,
-    ) -> tuple[str, str, bool, httpx.Request]:
+    ) -> tuple[str, str, bool, httpx.Request, dict[str, Any] | None, str | None]:
+        """Legacy resolution using settings.upstream + ConfiguredModelResolver."""
         body = self._adapter.validate_request(payload)
         requested_model = body["model"]
         model = self._resolver.resolve(requested_model)
         upstream_model = model.upstream_model or model.id
         upstream_body = self._adapter.prepare_body(body, upstream_model)
         stream = self._adapter.is_stream(body)
-        request = self._build_request(upstream_body, stream=stream)
-        return requested_model, upstream_model, stream, request
+        request = self._build_request(
+            upstream_body,
+            stream=stream,
+            base_url=self._settings.upstream.base_url,
+            adapter_path=self._adapter.chat_path(),
+            api_key=self._settings.upstream_api_key(),
+        )
+        return requested_model, upstream_model, stream, request, None, None
+
+    def _prepare_db(
+        self,
+        payload: Any,
+        resolved: dict[str, Any],
+    ) -> tuple[str, str, bool, httpx.Request, dict[str, Any] | None, str | None]:
+        """DB-backed resolution using provider + credential from alias."""
+        body = self._adapter.validate_request(payload)
+        requested_model = body["model"]
+        upstream_model = resolved.get("upstream_model") or requested_model
+        upstream_body = self._adapter.prepare_body(body, upstream_model)
+        stream = self._adapter.is_stream(body)
+
+        base_url = resolved.get("base_url", "")
+        api_key = resolved.get("secret")
+        extra_headers: dict[str, str] = {}
+        try:
+            import json as _json
+
+            if resolved.get("headers"):
+                extra_headers = _json.loads(resolved["headers"])
+        except Exception:
+            extra_headers = {}
+
+        request = self._build_request(
+            upstream_body,
+            stream=stream,
+            base_url=base_url,
+            adapter_path=self._adapter.chat_path(),
+            api_key=api_key,
+            extra_headers=extra_headers,
+        )
+        provider = {
+            "id": resolved.get("provider_id", ""),
+            "base_url": base_url,
+            "headers": resolved.get("headers", "{}"),
+            "connect_timeout_seconds": resolved.get("connect_timeout_seconds", 10.0),
+            "read_timeout_seconds": resolved.get("read_timeout_seconds", 180.0),
+            "verify_tls": resolved.get("verify_tls", 1),
+            "trust_env": resolved.get("trust_env", 0),
+            "follow_redirects": resolved.get("follow_redirects", 0),
+        }
+        return (
+            requested_model,
+            upstream_model,
+            stream,
+            request,
+            provider,
+            resolved.get("credential_id"),
+        )
+
+    async def _prepare(
+        self,
+        payload: Any,
+    ) -> tuple[str, str, bool, httpx.Request, dict[str, Any] | None, str | None]:
+        """Resolve model: try DB alias first, fall back to legacy settings."""
+        body = self._adapter.validate_request(payload)
+        requested_model = body["model"]
+
+        if self._repository is not None:
+            resolved = await self._repository.resolve_alias(requested_model)
+            if resolved:
+                return self._prepare_db(payload, resolved)
+
+        # Fall back to legacy settings-based resolution.
+        if self._settings.upstream.base_url:
+            return self._prepare_legacy(payload)
+
+        raise invalid_request(
+            f"Model '{requested_model}' not configured. Add it via the dashboard.",
+            code="model_not_found",
+        )
 
     async def complete(
         self,
@@ -191,8 +318,15 @@ class ChatCompletionsProxy:
         *,
         model_id: str | None = None,
     ) -> Response:
-        requested_model, upstream_model, _, upstream_request = self._prepare(payload)
+        requested_model, upstream_model, stream, upstream_request, provider, credential_id = (
+            await self._prepare(payload)
+        )
         started = perf_counter()
+
+        if model_id is None:
+            model_id = requested_model
+
+        transport = await self._get_transport_for_provider(provider)
 
         # Persist the outgoing request body.
         await self._persist(
@@ -203,11 +337,13 @@ class ChatCompletionsProxy:
         )
 
         try:
-            upstream_response = await self._transport.send(upstream_request)
+            upstream_response = await transport.send(upstream_request)
         except httpx.TimeoutException as exc:
             await self._persist(
                 "update_request",
                 request_id=request_id,
+                model_id=model_id or requested_model,
+                upstream_model=upstream_model,
                 status_code=504,
                 duration_ms=int((perf_counter() - started) * 1000),
                 completed=True,
@@ -221,12 +357,15 @@ class ChatCompletionsProxy:
                 status_code=None,
                 duration_ms=None,
                 error="upstream_timeout",
+                credential_id=credential_id,
             )
             raise upstream_timeout_error() from exc
         except httpx.ConnectError as exc:
             await self._persist(
                 "update_request",
                 request_id=request_id,
+                model_id=model_id or requested_model,
+                upstream_model=upstream_model,
                 status_code=502,
                 duration_ms=int((perf_counter() - started) * 1000),
                 completed=True,
@@ -240,12 +379,15 @@ class ChatCompletionsProxy:
                 status_code=None,
                 duration_ms=None,
                 error="upstream_connection_failed",
+                credential_id=credential_id,
             )
             raise upstream_connection_error(f"Upstream connection failed: {exc}") from exc
         except httpx.HTTPError as exc:
             await self._persist(
                 "update_request",
                 request_id=request_id,
+                model_id=model_id or requested_model,
+                upstream_model=upstream_model,
                 status_code=502,
                 duration_ms=int((perf_counter() - started) * 1000),
                 completed=True,
@@ -259,6 +401,7 @@ class ChatCompletionsProxy:
                 status_code=None,
                 duration_ms=None,
                 error="upstream_request_failed",
+                credential_id=credential_id,
             )
             raise upstream_connection_error(f"Upstream request failed: {exc}") from exc
 
@@ -302,6 +445,7 @@ class ChatCompletionsProxy:
                 status_code=upstream_response.status_code,
                 duration_ms=duration_ms,
                 error=None,
+                credential_id=credential_id,
             )
             if self._usage_accountant is not None:
                 self._usage_accountant.observe(
@@ -322,8 +466,12 @@ class ChatCompletionsProxy:
         *,
         model_id: str | None = None,
     ) -> Response:
-        requested_model, upstream_model, _, upstream_request = self._prepare(payload)
+        requested_model, upstream_model, stream, upstream_request, provider, credential_id = (
+            await self._prepare(payload)
+        )
         started = perf_counter()
+
+        transport = await self._get_transport_for_provider(provider)
 
         # Persist the outgoing request body.
         await self._persist(
@@ -334,11 +482,13 @@ class ChatCompletionsProxy:
         )
 
         try:
-            upstream_response = await self._transport.stream(upstream_request)
+            upstream_response = await transport.stream(upstream_request)
         except httpx.TimeoutException as exc:
             await self._persist(
                 "update_request",
                 request_id=request_id,
+                model_id=model_id or requested_model,
+                upstream_model=upstream_model,
                 status_code=504,
                 duration_ms=int((perf_counter() - started) * 1000),
                 completed=True,
@@ -352,12 +502,15 @@ class ChatCompletionsProxy:
                 status_code=None,
                 duration_ms=None,
                 error="upstream_timeout",
+                credential_id=credential_id,
             )
             raise upstream_timeout_error() from exc
         except httpx.ConnectError as exc:
             await self._persist(
                 "update_request",
                 request_id=request_id,
+                model_id=model_id or requested_model,
+                upstream_model=upstream_model,
                 status_code=502,
                 duration_ms=int((perf_counter() - started) * 1000),
                 completed=True,
@@ -371,12 +524,15 @@ class ChatCompletionsProxy:
                 status_code=None,
                 duration_ms=None,
                 error="upstream_connection_failed",
+                credential_id=credential_id,
             )
             raise upstream_connection_error(f"Upstream connection failed: {exc}") from exc
         except httpx.HTTPError as exc:
             await self._persist(
                 "update_request",
                 request_id=request_id,
+                model_id=model_id or requested_model,
+                upstream_model=upstream_model,
                 status_code=502,
                 duration_ms=int((perf_counter() - started) * 1000),
                 completed=True,
@@ -390,6 +546,7 @@ class ChatCompletionsProxy:
                 status_code=None,
                 duration_ms=None,
                 error="upstream_request_failed",
+                credential_id=credential_id,
             )
             raise upstream_connection_error(f"Upstream request failed: {exc}") from exc
 
@@ -433,6 +590,7 @@ class ChatCompletionsProxy:
                     status_code=upstream_response.status_code,
                     duration_ms=duration_ms,
                     error=None,
+                    credential_id=credential_id,
                 )
                 return Response(
                     content=body,
@@ -508,6 +666,7 @@ class ChatCompletionsProxy:
                     status_code=upstream_response.status_code,
                     duration_ms=duration_ms,
                     error=error,
+                    credential_id=credential_id,
                 )
 
         return StreamingResponse(

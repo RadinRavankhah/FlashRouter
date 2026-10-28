@@ -161,45 +161,27 @@ async def test_admin_login_and_protected_endpoints(tmp_path: Path) -> None:
         repo = app.state.request_repository
         assert repo is not None
 
-        # Login
-        login = await client.post(
-            "/admin/login",
-            json={"api_key": "gw-test-key"},
-        )
-        assert login.status_code == 200
-        token = login.json()["access_token"]
-        assert token
+        # Setup status: not configured initially
+        status = await client.get("/admin/setup/status")
+        assert status.status_code == 200
+        assert status.json()["configured"] is False
 
-        # Make a request to generate history
+        # Make a request to generate history (no auth needed)
         await client.post(
             "/v1/chat/completions",
-            headers=auth_headers(),
             json={"model": "coding-fast", "messages": []},
         )
 
-        # Access protected endpoints with token
-        headers = {"Authorization": f"Bearer {token}"}
-        stats = await client.get("/admin/v1/stats", headers=headers)
+        # Access admin endpoints without auth
+        stats = await client.get("/admin/v1/stats")
         assert stats.status_code == 200
         assert stats.json()["total"] == 1
 
-        health = await client.get("/admin/v1/health", headers=headers)
+        health = await client.get("/admin/v1/health")
         assert health.status_code == 200
 
-        requests = await client.get(
-            "/admin/v1/requests?limit=10&offset=0", headers=headers
-        )
+        requests = await client.get("/admin/v1/requests?limit=10&offset=0")
         assert requests.status_code == 200
         data = requests.json()
         assert len(data["requests"]) == 1
 
-        # Without token -> 401
-        no_token = await client.get("/admin/v1/stats")
-        assert no_token.status_code == 401
-
-        # Wrong login key -> 401
-        bad_login = await client.post(
-            "/admin/login",
-            json={"api_key": "wrong-key"},
-        )
-        assert bad_login.status_code == 401

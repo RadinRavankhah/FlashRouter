@@ -8,7 +8,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATIONS = {
     1: """
@@ -58,6 +58,58 @@ MIGRATIONS = {
     CREATE INDEX IF NOT EXISTS idx_attempts_request_id ON attempts(request_id);
     CREATE INDEX IF NOT EXISTS idx_payloads_request_id ON payloads(request_id);
     INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1');
+    """,
+    2: """
+    CREATE TABLE IF NOT EXISTS providers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        base_url TEXT NOT NULL,
+        protocol TEXT NOT NULL DEFAULT 'openai-chat',
+        headers TEXT DEFAULT '{}',
+        connect_timeout_seconds REAL DEFAULT 10.0,
+        read_timeout_seconds REAL DEFAULT 180.0,
+        verify_tls INTEGER DEFAULT 1,
+        trust_env INTEGER DEFAULT 0,
+        follow_redirects INTEGER DEFAULT 0,
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS provider_credentials (
+        id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL REFERENCES providers(id),
+        name TEXT NOT NULL,
+        secret TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS gateway_keys (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        secret TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS db_models (
+        id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL REFERENCES providers(id),
+        credential_id TEXT REFERENCES provider_credentials(id),
+        upstream_model TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS model_aliases (
+        id TEXT PRIMARY KEY,
+        alias TEXT NOT NULL UNIQUE,
+        db_model_id TEXT NOT NULL REFERENCES db_models(id),
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_model_aliases_alias ON model_aliases(alias);
+    CREATE INDEX IF NOT EXISTS idx_db_models_provider_id ON db_models(provider_id);
+    CREATE INDEX IF NOT EXISTS idx_provider_credentials_provider_id
+    ON provider_credentials(provider_id);
+    ALTER TABLE attempts ADD COLUMN credential_id TEXT;
+    INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2');
     """,
 }
 

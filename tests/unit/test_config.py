@@ -92,15 +92,14 @@ def test_missing_config_is_clear(tmp_path: Path) -> None:
         load_config(tmp_path / "missing.toml")
 
 
-def test_blank_gateway_key_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_blank_gateway_key_is_allowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FLASHROUTER_DATA_DIR", str(tmp_path))
     path = write_config(
         tmp_path,
         VALID_CONFIG.replace('api_key = "gateway-secret"', 'api_key = ""'),
     )
-
-    with pytest.raises(ConfigError, match="api_key"):
-        load_config(path)
+    settings = load_config(path)
+    assert settings.gateway.api_key is None
 
 
 def test_duplicate_model_ids_are_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

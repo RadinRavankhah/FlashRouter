@@ -33,8 +33,11 @@ For now, I’ll call it **Gateway**.
 - Hosting models itself.
 - A large catalog of predefined providers.
 - Distributed deployment or multi-user administration.
+- Authentication (local dev tool bound to localhost; no gateway keys, no JWT).
 
 **The dashboard is the control plane. The proxy is the data plane. They share a backend, but the proxy must not depend on the dashboard being open.**
+
+The gateway binds to `127.0.0.1` by default and is intended for single-user local use only. It is not a multi-user service and should not be exposed to the network without additional hardening.
 
 ---
 
