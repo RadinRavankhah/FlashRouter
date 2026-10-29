@@ -188,6 +188,8 @@ class ChatCompletionsProxy:
             timeout=httpx.Timeout(
                 connect=provider.get("connect_timeout_seconds") or 10.0,
                 read=provider.get("read_timeout_seconds") or 180.0,
+                write=provider.get("read_timeout_seconds") or 180.0,
+                pool=provider.get("read_timeout_seconds") or 180.0,
             ),
             verify=bool(provider.get("verify_tls", 1)),
             trust_env=bool(provider.get("trust_env", 0)),

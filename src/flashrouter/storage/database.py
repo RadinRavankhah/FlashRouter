@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 MIGRATIONS = {
     1: """
@@ -111,7 +112,17 @@ MIGRATIONS = {
     ALTER TABLE attempts ADD COLUMN credential_id TEXT;
     INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2');
     """,
+    3: """
+    ALTER TABLE gateway_keys ADD COLUMN last_used TEXT;
+    INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3');
+    """,
 }
+
+
+_ALTER_ADD_COLUMN = re.compile(
+    r"ALTER\s+TABLE\s+(?P<table>\w+)\s+ADD\s+COLUMN\s+(?P<column>\w+)",
+    re.IGNORECASE,
+)
 
 
 class Database:
@@ -138,6 +149,13 @@ class Database:
             raise RuntimeError("Database not connected")
         return self._connection
 
+    async def _column_exists(self, table: str, column: str) -> bool:
+        async with self.connection.execute(
+            f"PRAGMA table_info({table})"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return any(row[1] == column for row in rows)
+
     async def migrate(self) -> None:
         conn = self.connection
         await conn.execute(
@@ -151,7 +169,16 @@ class Database:
 
         for version in sorted(MIGRATIONS):
             if version > current_version:
-                await conn.executescript(MIGRATIONS[version])
+                script = MIGRATIONS[version]
+                # Guard ALTER TABLE ADD COLUMN so migrations stay idempotent
+                # when re-run against an already-migrated database.
+                for match in _ALTER_ADD_COLUMN.finditer(script):
+                    table = match.group("table")
+                    column = match.group("column")
+                    if await self._column_exists(table, column):
+                        script = script.replace(match.group(0), "")
+                if script.strip():
+                    await conn.executescript(script)
                 await conn.execute(
                     "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
                     (str(version),),

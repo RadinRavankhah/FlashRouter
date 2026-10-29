@@ -7,6 +7,7 @@ import json
 from fastapi import APIRouter, Request
 from starlette.responses import Response
 
+from flashrouter.auth import require_gateway_key
 from flashrouter.errors import invalid_request
 from flashrouter.storage.repository import RequestRepository
 
@@ -24,6 +25,8 @@ def _get_repository(request: Request) -> RequestRepository:
 
 @router.post("/chat/completions")
 async def chat_completions(request: Request) -> Response:
+    gateway_key_id = await require_gateway_key(request)
+
     raw_body = await request.body()
     try:
         payload = json.loads(raw_body)
@@ -41,7 +44,7 @@ async def chat_completions(request: Request) -> Response:
     try:
         await repo.create_request(
             request_id=request_id,
-            gateway_key_id="default",
+            gateway_key_id=gateway_key_id or "default",
             client_ip=request.client.host if request.client else None,
             method=request.method,
             path=request.url.path,
@@ -68,3 +71,22 @@ async def chat_completions(request: Request) -> Response:
     if wants_stream:
         return await proxy.stream(payload, request_id, model_id=model_id)
     return await proxy.complete(payload, request_id, model_id=model_id)
+
+
+@router.get("/models")
+async def list_models(request: Request) -> dict:
+    await require_gateway_key(request)
+
+    repo = _get_repository(request)
+    aliases = await repo.list_model_aliases()
+    data = [
+        {
+            "id": a["alias"],
+            "object": "model",
+            "created": 0,
+            "owned_by": a.get("provider_name", "unknown"),
+        }
+        for a in aliases
+        if a.get("alias_enabled", 1)
+    ]
+    return {"object": "list", "data": data}

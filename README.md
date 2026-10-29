@@ -2,9 +2,10 @@
 
 FlashRouter is a lightweight, local-first gateway for OpenAI-compatible APIs. It is intended to become a practical replacement for a local 9router setup without Docker, a production Node process, or a large provider catalog.
 
-This repository is at **v0.1**: a small, reliable proxy for OpenAI Chat Completions.
+This repository is at **v0.3**: a manageable local gateway with full request history
+and a dashboard for upstreams, credentials, client keys, and models.
 
-## What works in v0.1
+## What works in v0.3
 
 - `POST /v1/chat/completions`
   - Streaming and non-streaming
@@ -12,22 +13,42 @@ This repository is at **v0.1**: a small, reliable proxy for OpenAI Chat Completi
   - Request-field preservation
   - Upstream status and error-body propagation
 - `GET /v1/models`
-  - Manually configured, client-facing model IDs
-- One configurable upstream
-  - Base URL, upstream API key, timeouts, custom headers
-  - OpenAI-compatible local endpoints
-- One gateway API key
-- Shared `httpx.AsyncClient` connection pool
-- Clean outbound headers (client auth, cookies, and forwarding headers are not forwarded)
-- Unbuffered streaming and client-disconnect cleanup
-- Operational terminal logs and sanitized diagnostics
+  - Client-facing model aliases served from the dashboard
+- Multiple upstream configurations managed from the dashboard
+  - Name, base URL, protocol, custom headers, timeouts, enabled/disabled
+- Upstream credential management
+  - Add, rename, reveal, copy, replace, disable, delete (history preserved)
+  - Test with a billable request via the dashboard
+- Multiple gateway/client keys
+  - Create per client or workflow, reveal/copy, rename, disable/revoke
+  - Last-used timestamp; separately attributable request history
+- Model configuration
+  - Manual model entries and client-facing aliases
+  - Choose which upstream serves each model
+  - Model visibility in `/v1/models`
+- Per-key log attribution
+  - Gateway key, upstream credential, and actual model on every request
+  - Filters and detail-page links
+- Request-history dashboard
+  - Request-history table, request-detail page, readable JSON/text views
+  - Error details, duration and time to first token
+  - Date, model, status, request ID, gateway key, and credential filters
+- Persistent storage
+  - SQLite with WAL mode and versioned migrations
+  - Full request/attempt/payload body logging (secrets redacted)
+  - Forever retention; database-size and free-space display
+- Admin security baseline
+  - Localhost binding by default
+  - CSRF/origin protections on admin mutations
+  - No secrets in browser local storage
+  - Plaintext secret storage clearly disclosed
 
 Not included yet:
 
-- Dashboard integration
-- Persistent request history or SQLite
-- Multiple upstreams, key rotation, retries, or fallbacks
-- Budgets, pricing, or analytics
+- Budget enforcement
+- Automatic rotation
+- Fallback chains
+- Encryption
 - Responses API or Anthropic Messages compatibility
 - Windows packaging, encryption, or backups
 
@@ -105,7 +126,20 @@ owned_by = "openrouter"
 
 `id` is the model name clients send and the name returned by `/v1/models`. `upstream_model` is what FlashRouter sends upstream. Unknown model IDs are rejected before any upstream request is made.
 
+Model entries are managed entirely from the dashboard (Models & aliases page). `[[models]]` entries in `config.toml` are still read for backward compatibility but are no longer required.
+
 `trust_env` is `false` by default so `HTTP_PROXY`/`HTTPS_PROXY` do not silently affect upstream requests. Set it to `true` only if the proxy environment is intentional.
+
+## Client authentication
+
+FlashRouter authenticates clients with a bearer gateway API key:
+
+- `Authorization: Bearer <gateway-key>` is required on `/v1/chat/completions` and `/v1/models`.
+- Keys are created and managed from the dashboard (Gateway keys page).
+- A missing or invalid key returns `401`; a disabled key returns `403`.
+- Each request is attributed to the key used, so history is separately attributable per key.
+
+For backward compatibility, the single gateway API key from `[gateway].api_key` (or `FLASHROUTER_GATEWAY_API_KEY`) continues to work even before any dashboard key is created.
 
 ### Environment overrides
 
@@ -219,17 +253,53 @@ Authorization: Bearer <gateway-key>
 Content-Type: application/json
 ```
 
-The `model` field must match a configured `[[models]].id`. FlashRouter replaces it with `upstream_model` and preserves the rest of the JSON body.
+The `model` field must match a configured client-facing model alias (managed from the dashboard). FlashRouter resolves the alias to an upstream model and provider, then preserves the rest of the JSON body.
 
 Streaming requests use `"stream": true`. SSE chunks are forwarded incrementally without parsing or buffering the complete response.
 
 ### `GET /v1/models`
 
-Requires the same bearer token and returns the configured client-facing model IDs in OpenAI list format.
+Requires the same bearer token and returns the configured client-facing model aliases in OpenAI list format.
 
 ### `GET /healthz`
 
 Unauthenticated liveness check. It does not contact upstream or reveal configuration.
+
+## Admin API
+
+All admin endpoints are under `/admin` and are protected by CSRF/origin checks on state-changing requests. The dashboard calls these directly.
+
+### Setup
+
+- `GET /admin/setup/status` — whether the gateway has been configured.
+- `POST /admin/setup` — create the first gateway key, upstream, credential, model, and alias.
+
+### Providers (`/admin/v1/providers`)
+
+- `GET`, `POST`, `GET /{id}`, `PUT /{id}`, `DELETE /{id}` — full CRUD.
+- `POST /{id}/test` — send a minimal (potentially billable) chat request through the provider's stored credential; returns status, duration, and a sanitized response.
+
+### Provider credentials (`/admin/v1/credentials`)
+
+- `GET`, `POST`, `GET /{id}`, `PUT /{id}`, `DELETE /{id}` — full CRUD. Secrets are masked in list views and can be revealed/copy from the dashboard.
+
+### Gateway keys (`/admin/v1/keys`)
+
+- `GET`, `POST`, `GET /{id}`, `PUT /{id}`, `DELETE /{id}` — full CRUD. Disabled keys return `403` on inference requests.
+
+### Models and aliases (`/admin/v1/dbmodels`, `/admin/v1/aliases`)
+
+- Full CRUD for upstream models and client-facing aliases. Aliases are what clients send in `model` and what `/v1/models` exposes.
+
+### Requests (`/admin/v1/requests`)
+
+- `GET` — list requests with filters: `model`, `status`, `gateway_key`, `credential`, `date_from`, `date_to`, `request_id`, `limit`, `offset`.
+- `GET /{id}` — full request detail with attempts and payloads.
+
+### Stats and health
+
+- `GET /admin/v1/stats` — request totals by status.
+- `GET /admin/v1/health` — storage health, database and disk sizes.
 
 ## Error behavior
 
@@ -271,6 +341,15 @@ Run linting:
 
 ```powershell
 ruff check .
+```
+
+The dashboard is a Vite/React SPA. Build it before running the server so FastAPI can serve it:
+
+```powershell
+cd ui
+npm install
+npm run build   # tsc --noEmit && vite build
+cd ..
 ```
 
 Project layout:

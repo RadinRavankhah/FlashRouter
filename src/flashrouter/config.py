@@ -182,14 +182,12 @@ class Settings(BaseModel):
     gateway: GatewayConfig
     upstream: UpstreamConfig
     admin: AdminConfig = Field(default_factory=AdminConfig)
-    models: list[ModelConfig]
+    models: list[ModelConfig] = Field(default_factory=list)
     config_path: Path | None = Field(default=None, exclude=True)
     data_dir: Path = Field(default_factory=default_data_dir, exclude=True)
 
     @model_validator(mode="after")
     def models_must_be_unique(self) -> Settings:
-        if not self.models:
-            raise ValueError("at least one [[models]] entry is required")
         ids = [model.id for model in self.models]
         duplicates = sorted({model_id for model_id in ids if ids.count(model_id) > 1})
         if duplicates:

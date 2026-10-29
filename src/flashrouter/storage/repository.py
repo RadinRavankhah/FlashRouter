@@ -184,6 +184,8 @@ class RequestRepository:
         offset: int = 0,
         model: str | None = None,
         status: int | None = None,
+        gateway_key: str | None = None,
+        credential: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
         request_id: str | None = None,
@@ -196,6 +198,18 @@ class RequestRepository:
         if status is not None:
             conditions.append("status_code = ?")
             values.append(status)
+        if gateway_key is not None:
+            conditions.append("gateway_key_id = ?")
+            values.append(gateway_key)
+        if credential is not None:
+            conditions.append(
+                "EXISTS ("
+                "SELECT 1 FROM attempts a "
+                "WHERE a.request_id = requests.request_id "
+                "AND a.credential_id = ?"
+                ")"
+            )
+            values.append(credential)
         if request_id:
             conditions.append("request_id = ?")
             values.append(request_id)
@@ -211,7 +225,7 @@ class RequestRepository:
             where = "WHERE " + " AND ".join(conditions)
 
         query = f"""
-            SELECT * FROM requests {where}
+            SELECT DISTINCT * FROM requests {where}
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
         """
@@ -562,6 +576,25 @@ async def get_gateway_key(self, key_id: str) -> dict[str, Any] | None:
     return dict(zip(columns, row, strict=False))
 
 
+async def get_gateway_key_by_secret(self, secret: str) -> dict[str, Any] | None:
+    async with self._db.connection.execute(
+        "SELECT * FROM gateway_keys WHERE secret = ?", (secret,)
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row is None:
+        return None
+    columns = [desc[0] for desc in cursor.description]
+    return dict(zip(columns, row, strict=False))
+
+
+async def update_gateway_key_last_used(self, key_id: str) -> None:
+    now = _now()
+    async with self._db.transaction() as conn:
+        await conn.execute(
+            "UPDATE gateway_keys SET last_used = ? WHERE id = ?", (now, key_id)
+        )
+
+
 async def update_gateway_key(
     self,
     key_id: str,
@@ -812,3 +845,6 @@ RequestRepository.get_model_alias = get_model_alias
 RequestRepository.resolve_alias = resolve_alias
 RequestRepository.update_model_alias = update_model_alias
 RequestRepository.delete_model_alias = delete_model_alias
+
+RequestRepository.get_gateway_key_by_secret = get_gateway_key_by_secret
+RequestRepository.update_gateway_key_last_used = update_gateway_key_last_used

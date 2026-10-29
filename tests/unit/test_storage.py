@@ -235,7 +235,8 @@ async def test_migrations_run_once(repo: RequestRepository) -> None:
     # Migrations should be idempotent; running again should not error.
     from flashrouter.storage.database import MIGRATIONS, SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 2
+    assert SCHEMA_VERSION == 3
     assert 1 in MIGRATIONS
     assert 2 in MIGRATIONS
+    assert 3 in MIGRATIONS
     await repo.get_stats()  # just ensure connection still works

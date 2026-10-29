@@ -258,6 +258,7 @@ export function ProvidersPage() {
 
       <Modal
         title={editing ? "Edit provider" : "Add provider"}
+        open={open}
         onClose={() => setOpen(false)}
       >
         <form onSubmit={(e) => { e.preventDefault(); save(); }} className="modal-form">
@@ -298,6 +299,7 @@ export function CredentialsPage() {
   const credentials: any[] = data?.credentials ?? [];
 
   const mask = (s: string) => (s.length <= 8 ? "*".repeat(s.length) : `${s.slice(0, 4)}...${s.slice(-4)}`);
+  const copy = (s: string) => navigator.clipboard.writeText(s);
 
   const openCreate = () => {
     setForm({ provider_id: "", name: "", secret: "", enabled: true });
@@ -351,16 +353,39 @@ export function CredentialsPage() {
               <tr key={c.id}>
                 <td>{c.name}</td>
                 <td>{c.provider_id}</td>
-                <td>
-                  <div className="secret-row">
-                    <span className="mono small">{form?.id === c.id ? c.secret : mask(c.secret ?? "")}</span>
-                    {form?.id !== c.id && (
-                      <button className="ghost reveal-btn" onClick={() => setForm({ ...form, id: c.id, secret: c.secret })}>
-                        Reveal
-                      </button>
-                    )}
-                  </div>
-                </td>
+                  <td>
+                    <div className="secret-row">
+                      {form?.id === c.id ? (
+                        <>
+                          <span className="mono small">{c.secret}</span>
+                          <button
+                            className="ghost reveal-btn"
+                            onClick={() => copy(c.secret ?? "")}
+                            title="Copy"
+                          >
+                            Copy
+                          </button>
+                          <button
+                            className="ghost reveal-btn"
+                            onClick={() => setForm({ ...form, id: null })}
+                            title="Hide"
+                          >
+                            Hide
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="mono small">{mask(c.secret ?? "")}</span>
+                          <button
+                            className="ghost reveal-btn"
+                            onClick={() => setForm({ ...form, id: c.id, secret: c.secret })}
+                          >
+                            Reveal
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </td>
                 <td><Badge tone={c.enabled ? "success" : "neutral"}>{c.enabled ? "on" : "off"}</Badge></td>
                 <td className="num">
                   <button className="ghost" onClick={() => openEdit(c)}>Edit</button>
@@ -374,7 +399,7 @@ export function CredentialsPage() {
         </table>
       </Card>
 
-      <Modal title={editing ? "Edit credential" : "Add credential"} onClose={() => setOpen(false)}>
+      <Modal title={editing ? "Edit credential" : "Add credential"} open={open} onClose={() => setOpen(false)}>
         <form onSubmit={(e) => { e.preventDefault(); save(); }} className="modal-form">
           <Field label="Provider ID">
             <input className="input" type="text" value={form.provider_id ?? ""} onChange={(e) => setForm({ ...form, provider_id: e.target.value })} />
@@ -411,6 +436,7 @@ export function KeysPage() {
   const keys: GatewayKey[] = data?.keys ?? [];
 
   const mask = (s: string) => (s.length <= 8 ? "*".repeat(s.length) : `${s.slice(0, 4)}...${s.slice(-4)}`);
+  const copy = (s: string) => navigator.clipboard.writeText(s);
 
   const openCreate = () => {
     setForm({ name: "", secret: "", enabled: true });
@@ -457,16 +483,39 @@ export function KeysPage() {
             {keys.map((k) => (
               <tr key={k.id}>
                 <td>{k.name}</td>
-                <td>
-                  <div className="secret-row">
-                    <span className="mono small">{form?.id === k.id ? k.secret : mask(k.secret)}</span>
-                    {form?.id !== k.id && (
-                      <button className="ghost reveal-btn" onClick={() => setForm({ ...form, id: k.id, secret: k.secret })}>
-                        Reveal
-                      </button>
-                    )}
-                  </div>
-                </td>
+                  <td>
+                    <div className="secret-row">
+                      {form?.id === k.id ? (
+                        <>
+                          <span className="mono small">{k.secret}</span>
+                          <button
+                            className="ghost reveal-btn"
+                            onClick={() => copy(k.secret)}
+                            title="Copy"
+                          >
+                            Copy
+                          </button>
+                          <button
+                            className="ghost reveal-btn"
+                            onClick={() => setForm({ ...form, id: null })}
+                            title="Hide"
+                          >
+                            Hide
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="mono small">{mask(k.secret)}</span>
+                          <button
+                            className="ghost reveal-btn"
+                            onClick={() => setForm({ ...form, id: k.id, secret: k.secret })}
+                          >
+                            Reveal
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </td>
                 <td><Badge tone={k.enabled ? "success" : "neutral"}>{k.enabled ? "on" : "off"}</Badge></td>
                 <td className="num">
                   <button className="ghost" onClick={() => openEdit(k)}>Edit</button>
@@ -480,7 +529,7 @@ export function KeysPage() {
         </table>
       </Card>
 
-      <Modal title={editing ? "Edit key" : "Add key"} onClose={() => setOpen(false)}>
+      <Modal title={editing ? "Edit key" : "Add key"} open={open} onClose={() => setOpen(false)}>
         <form onSubmit={(e) => { e.preventDefault(); save(); }} className="modal-form">
           <Field label="Name">
             <input className="input" type="text" value={form.name ?? ""} onChange={(e) => setForm({ ...form, name: e.target.value })} />
@@ -611,7 +660,7 @@ export function RoutesPage() {
         </Card>
       </div>
 
-      <Modal title={mode === "model" ? (editing ? "Edit model" : "Add model") : (editing ? "Edit alias" : "Add alias")} onClose={() => setOpen(false)}>
+      <Modal title={mode === "model" ? (editing ? "Edit model" : "Add model") : (editing ? "Edit alias" : "Add alias")} open={open} onClose={() => setOpen(false)}>
         <form onSubmit={(e) => { e.preventDefault(); save(); }} className="modal-form">
           {mode === "model" ? (
             <>

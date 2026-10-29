@@ -46,6 +46,16 @@ def authentication_error(message: str = "Invalid gateway API key") -> GatewayErr
     )
 
 
+def permission_error(message: str = "Gateway key is disabled") -> GatewayError:
+    return GatewayError(
+        status_code=403,
+        message=message,
+        type="authentication_error",
+        code="key_disabled",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 def invalid_request(
     message: str,
     *,

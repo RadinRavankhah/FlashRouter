@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, Request
@@ -126,6 +127,34 @@ def create_app(
         request.state.request_id = new_request_id()
         response = await call_next(request)
         response.headers.setdefault("X-FlashRouter-Request-ID", request.state.request_id)
+        return response
+
+    @app.middleware("http")
+    async def csrf_protection(request: Request, call_next):
+        if (
+            request.method in {"POST", "PUT", "PATCH", "DELETE"}
+            and request.url.path.startswith("/admin/v1")
+        ):
+            expected = f"{request.url.scheme}://{request.url.netloc}"
+            origin = request.headers.get("origin")
+            referer = request.headers.get("referer")
+            allowed = bool(origin and origin == expected)
+            if not allowed and referer:
+                try:
+                    ref = urlparse(referer)
+                    allowed = f"{ref.scheme}://{ref.netloc}" == expected
+                except Exception:
+                    allowed = False
+            if not allowed:
+                return JSONResponse(
+                    status_code=403,
+                    content=error_body(
+                        "CSRF origin check failed",
+                        error_type="invalid_request_error",
+                        code="csrf_failed",
+                    ),
+                )
+        response = await call_next(request)
         return response
 
     @app.exception_handler(GatewayError)

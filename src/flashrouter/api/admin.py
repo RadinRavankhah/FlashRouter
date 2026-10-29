@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json as _json
 import secrets as _secrets
+import time
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
@@ -21,6 +23,7 @@ from flashrouter.config import (
     save_config,
 )
 from flashrouter.errors import authentication_error, invalid_request
+from flashrouter.transport.urls import join_upstream_url
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -136,6 +139,16 @@ async def setup_save(request: Request, body: dict[str, Any]) -> JSONResponse:
         enabled=True,
     )
 
+    # Seed the first gateway key from the configured gateway API key so that
+    # client authentication works immediately after setup.
+    if gateway_key:
+        await repo.create_gateway_key(
+            key_id=_secrets.token_hex(8),
+            name="default",
+            secret=gateway_key,
+            enabled=True,
+        )
+
     return JSONResponse({"ok": True, "message": "Configuration saved"})
 
 
@@ -211,6 +224,153 @@ async def delete_provider(request: Request, provider_id: str) -> JSONResponse:
     repo = _get_repository(request)
     await repo.delete_provider(provider_id)
     return JSONResponse({"ok": True})
+
+
+@router.post("/v1/providers/{provider_id}/test")
+async def test_provider(request: Request, provider_id: str, body: dict[str, Any]) -> JSONResponse:
+    """Send a minimal (potentially billable) chat request through the provider.
+
+    Validates that the stored credential can reach the upstream. Returns the
+    upstream status, duration, and a sanitized response summary.
+    """
+    repo = _get_repository(request)
+    provider = await repo.get_provider(provider_id)
+    if provider is None:
+        raise invalid_request("Provider not found", code="not_found")
+
+    credential_id = body.get("credential_id")
+    credential = None
+    if credential_id:
+        credential = await repo.get_provider_credential(credential_id)
+        if credential is None or credential.get("provider_id") != provider_id:
+            raise invalid_request(
+                "Credential not found for this provider", code="not_found"
+            )
+    else:
+        credentials = await repo.list_provider_credentials()
+        candidates = [
+            c
+            for c in credentials
+            if c.get("provider_id") == provider_id and c.get("enabled")
+        ]
+        if not candidates:
+            raise invalid_request(
+                "No enabled credentials for this provider", code="no_credential"
+            )
+        credential = candidates[0]
+
+    try:
+        headers = _json.loads(provider.get("headers") or "{}")
+    except Exception:
+        headers = {}
+
+    model = body.get("model") or "test"
+    messages = body.get("messages") or [
+        {"role": "user", "content": "test"}
+    ]
+    test_body = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "max_tokens": body.get("max_tokens", 1),
+    }
+
+    request_headers = {
+        "Content-Type": "application/json",
+        **headers,
+    }
+    api_key = credential.get("secret") or None
+    if api_key:
+        request_headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        content = _json.dumps(test_body).encode("utf-8")
+    except Exception as exc:  # pragma: no cover - defensive
+        raise invalid_request("Invalid test request body") from exc
+
+    started = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=float(provider.get("connect_timeout_seconds") or 10.0),
+                read=float(provider.get("read_timeout_seconds") or 180.0),
+                write=float(provider.get("read_timeout_seconds") or 180.0),
+                pool=float(provider.get("read_timeout_seconds") or 180.0),
+            ),
+            verify=bool(provider.get("verify_tls", 1)),
+            trust_env=bool(provider.get("trust_env", 0)),
+            follow_redirects=bool(provider.get("follow_redirects", 0)),
+        ) as client:
+            response = await client.post(
+                join_upstream_url(provider["base_url"], "/chat/completions"),
+                headers=request_headers,
+                content=content,
+            )
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            try:
+                response_body = response.json()
+            except Exception:
+                response_body = {"raw": response.text[:500]}
+            return JSONResponse(
+                {
+                    "ok": response.is_success,
+                    "status": response.status_code,
+                    "duration_ms": duration_ms,
+                    "credential_id": credential["id"],
+                    "credential_name": credential.get("name"),
+                    "model": model,
+                    "body": response_body,
+                    "error": None
+                    if response.is_success
+                    else response_body.get("error", {}).get("message")
+                    or response.text[:200],
+                }
+            )
+    except httpx.TimeoutException:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return JSONResponse(
+            {
+                "ok": False,
+                "status": 504,
+                "duration_ms": duration_ms,
+                "credential_id": credential["id"],
+                "credential_name": credential.get("name"),
+                "model": model,
+                "body": None,
+                "error": "upstream_timeout",
+            },
+            status_code=504,
+        )
+    except httpx.ConnectError as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return JSONResponse(
+            {
+                "ok": False,
+                "status": 502,
+                "duration_ms": duration_ms,
+                "credential_id": credential["id"],
+                "credential_name": credential.get("name"),
+                "model": model,
+                "body": None,
+                "error": f"connection_failed: {exc}",
+            },
+            status_code=502,
+        )
+    except httpx.HTTPError as exc:
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return JSONResponse(
+            {
+                "ok": False,
+                "status": 502,
+                "duration_ms": duration_ms,
+                "credential_id": credential["id"],
+                "credential_name": credential.get("name"),
+                "model": model,
+                "body": None,
+                "error": f"request_failed: {exc}",
+            },
+            status_code=502,
+        )
 
 
 # -- provider credentials -------------------------------------------------
@@ -443,6 +603,8 @@ async def list_requests(
     request: Request,
     model: str | None = Query(default=None),
     status: int | None = Query(default=None),
+    gateway_key: str | None = Query(default=None),
+    credential: str | None = Query(default=None),
     date_from: str | None = Query(default=None),
     date_to: str | None = Query(default=None),
     request_id: str | None = Query(default=None),
@@ -455,6 +617,8 @@ async def list_requests(
         offset=offset,
         model=model,
         status=status,
+        gateway_key=gateway_key,
+        credential=credential,
         date_from=date_from,
         date_to=date_to,
         request_id=request_id,

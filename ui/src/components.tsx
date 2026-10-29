@@ -77,18 +77,21 @@ export function Field({ label, hint, className = "", children }: { label: string
   );
 }
 
-export function Modal({ title, subtitle, onClose, children }: { title: string; subtitle?: string; onClose: () => void; children: ReactNode }) {
+export function Modal({ title, subtitle, open = false, onClose, children }: { title: string; subtitle?: string; open?: boolean; onClose: () => void; children: ReactNode }) {
   useEffect(() => {
+    if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [open, onClose]);
+  if (!open) return null;
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="modal" role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}>
         <header>
           <h2>{title}</h2>
           {subtitle && <p>{subtitle}</p>}
+          <button className="icon-btn" onClick={onClose} aria-label="Close">✕</button>
         </header>
         {children}
       </div>

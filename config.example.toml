@@ -25,14 +25,6 @@ follow_redirects = false
 HTTP-Referer = "https://example.invalid/flashrouter"
 X-OpenRouter-Title = "FlashRouter"
 
-# Client-facing model IDs. /v1/models exposes the `id` values, and requests are
-# rewritten to `upstream_model` before they reach the upstream.
-[[models]]
-id = "coding-fast"
-upstream_model = "qwen/qwen3-coder"
-owned_by = "openrouter"
-
-[[models]]
-id = "coding-smart"
-upstream_model = "anthropic/claude-sonnet-4.5"
-owned_by = "openrouter"
+# Client-facing model aliases and upstream models are managed entirely from the
+# dashboard (Providers / Credentials / Models & aliases). [[models]] entries in
+# TOML are still read for backward compatibility but are no longer required.
