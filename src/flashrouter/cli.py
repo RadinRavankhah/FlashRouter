@@ -32,6 +32,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("run", help="Run gateway")
+    subparsers.add_parser("doctor", help="Diagnose setup")
+    subparsers.add_parser("backup", help="Backup database")
+    subparsers.add_parser("restore", help="Restore database")
+    subparsers.add_parser("reset-admin", help="Reset admin settings")
 
     run = subparsers.add_parser("run", help="Start the gateway")
     run.add_argument("--config", type=Path, help="Path to config.toml")
