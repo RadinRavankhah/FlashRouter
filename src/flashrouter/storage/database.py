@@ -9,7 +9,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 MIGRATIONS = {
     1: """
@@ -177,6 +177,41 @@ MIGRATIONS = {
     );
     CREATE INDEX IF NOT EXISTS idx_budget_req ON budget_reservations(request_id);
     INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '5');
+    """,
+    6: """
+    -- v0.6 routing, retry, fallback
+    CREATE TABLE IF NOT EXISTS routes (
+        id TEXT PRIMARY KEY,
+        alias TEXT NOT NULL UNIQUE,
+        enabled INTEGER DEFAULT 1,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS route_candidates (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        route_id TEXT NOT NULL REFERENCES routes(id),
+        upstream_model TEXT NOT NULL,
+        provider_id TEXT,
+        priority INTEGER DEFAULT 0,
+        enabled INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS credential_health (
+        credential_id TEXT PRIMARY KEY,
+        last_error TEXT,
+        recent_failures INTEGER DEFAULT 0,
+        cooldown_until TEXT,
+        last_attempt_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS retry_attempts (
+        attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL REFERENCES requests(request_id),
+        attempt_n INTEGER NOT NULL,
+        selected_candidate TEXT,
+        failure_category TEXT,
+        retry_delay_ms INTEGER,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT NOT NULL
+    );
+    INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '6');
     """,
 }
 
