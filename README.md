@@ -17,7 +17,7 @@ Config: copy `config.example.toml` to `config.toml`.
 
 ## Status
 
-v0.3 complete; v0.4 analytics backend; v0.5 budgets; v0.6 routing; v0.7/v0.8 adapters wired; v0.9 CLI/local operation. Not fully complete — v1.0 compatibility/recovery/performance docs remain.
+v0.3 complete; v0.4 analytics backend; v0.5 budgets; v0.6 routing; v0.7/v0.8 adapters wired; v0.9 CLI/local operation. Not fully complete — v1.0 compatibility/recovery/performance docs remain (simulated tests added).
 
 This repository is at **v0.3** (completed): dashboard configuration, upstream/key/model management, full request history. **v0.7** (Responses/Codex) and **v0.8** (Anthropic/Claude Code) adapters wired with endpoints and tests. **v0.4** analytics backend completed (DB v4, paginated APIs, reconciliation, CSV/projections, usage accountant, tests). **v0.5** budgets/restrictions: schema v5, enforcement service, basic tests. **Remaining:** concurrent reservation logic, alerts, traffic controls, v0.6 routing, v0.9 packaging, v1.0 stable.
 and a dashboard for upstreams, credentials, client keys, and models.
