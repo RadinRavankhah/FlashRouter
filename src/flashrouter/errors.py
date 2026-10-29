@@ -1,22 +1,28 @@
-"""OpenAI-compatible error types and response helpers."""
+"""OpenAI-style error envelopes."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 
-@dataclass(slots=True)
 class GatewayError(Exception):
-    status_code: int
-    message: str
-    type: str = "invalid_request_error"
-    code: str | None = None
-    param: str | None = None
-    headers: dict[str, str] = field(default_factory=dict)
-
-    def __str__(self) -> str:
-        return self.message
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        error_type: str = "invalid_request_error",
+        code: str | None = None,
+        param: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+        self.type = error_type
+        self.code = code
+        self.param = param
+        self.headers = headers or {}
 
 
 def error_body(
@@ -26,64 +32,48 @@ def error_body(
     code: str | None = None,
     param: str | None = None,
 ) -> dict[str, Any]:
-    return {
-        "error": {
-            "message": message,
-            "type": error_type,
-            "param": param,
-            "code": code,
-        }
-    }
+    error: dict[str, Any] = {"message": message, "type": error_type}
+    if param is not None:
+        error["param"] = param
+    if code is not None:
+        error["code"] = code
+    return {"error": error}
 
 
-def authentication_error(message: str = "Invalid gateway API key") -> GatewayError:
+def model_not_found(model: str) -> GatewayError:
     return GatewayError(
-        status_code=401,
-        message=message,
-        type="authentication_error",
-        code="invalid_api_key",
-        headers={"WWW-Authenticate": "Bearer"},
+        404,
+        f"Model '{model}' is not configured on this gateway",
+        code="model_not_found",
+        param="model",
     )
 
 
-def permission_error(message: str = "Gateway key is disabled") -> GatewayError:
+def unauthorized(message: str = "Missing or invalid API key") -> GatewayError:
+    return GatewayError(401, message, error_type="authentication_error", code="invalid_api_key")
+
+
+def forbidden(message: str = "This API key is disabled") -> GatewayError:
+    return GatewayError(403, message, error_type="permission_error", code="key_disabled")
+
+
+def bad_request(message: str, *, param: str | None = None) -> GatewayError:
+    return GatewayError(400, message, param=param)
+
+
+def no_available_upstream(model: str) -> GatewayError:
     return GatewayError(
-        status_code=403,
-        message=message,
-        type="authentication_error",
-        code="key_disabled",
-        headers={"WWW-Authenticate": "Bearer"},
+        502,
+        f"No healthy upstream could serve model '{model}'",
+        error_type="server_error",
+        code="no_upstream",
     )
 
 
-def invalid_request(
-    message: str,
-    *,
-    code: str = "invalid_request",
-    param: str | None = None,
-) -> GatewayError:
+def upstream_error(status: int, message: str) -> GatewayError:
     return GatewayError(
-        status_code=400,
-        message=message,
-        type="invalid_request_error",
-        code=code,
-        param=param,
-    )
-
-
-def upstream_connection_error(message: str) -> GatewayError:
-    return GatewayError(
-        status_code=502,
-        message=message,
-        type="upstream_error",
-        code="upstream_connection_failed",
-    )
-
-
-def upstream_timeout_error(message: str = "Upstream request timed out") -> GatewayError:
-    return GatewayError(
-        status_code=504,
-        message=message,
-        type="upstream_error",
-        code="upstream_timeout",
+        status if status >= 400 else 502,
+        message,
+        error_type="upstream_error",
+        code="upstream_error",
     )

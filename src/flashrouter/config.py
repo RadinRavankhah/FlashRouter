@@ -1,401 +1,166 @@
-"""Configuration loading and validation for FlashRouter."""
+"""Configuration loading.
+
+FlashRouter is configured primarily from the dashboard (stored in SQLite). The
+TOML file and environment only need to describe where to run and where to store
+data. A config file is optional; sensible defaults are used when it is absent.
+"""
 
 from __future__ import annotations
 
-import copy
 import os
 import tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
-from urllib.parse import urlsplit
-
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
-
-FORBIDDEN_CUSTOM_HEADERS = {
-    "authorization",
-    "connection",
-    "content-length",
-    "cookie",
-    "host",
-    "keep-alive",
-    "proxy-authorization",
-    "te",
-    "trailer",
-    "transfer-encoding",
-    "upgrade",
-}
-
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8787
 
 
 class ConfigError(Exception):
-    """Raised when configuration cannot be located, parsed, or validated."""
+    """Raised when a configuration file is present but invalid."""
+
+
+DEFAULT_PORT = 20128
+DEFAULT_HOST = "127.0.0.1"
 
 
 def default_data_dir() -> Path:
-    override = os.getenv("FLASHROUTER_DATA_DIR", "").strip()
-    if override:
-        return Path(override).expanduser()
-
+    env = os.environ.get("FLASHROUTER_DATA_DIR")
+    if env:
+        return Path(env).expanduser()
     if os.name == "nt":
-        local_app_data = os.getenv("LOCALAPPDATA", "").strip()
-        if local_app_data:
-            return Path(local_app_data) / "FlashRouter"
+        base = os.environ.get("LOCALAPPDATA")
+        if base:
+            return Path(base) / "FlashRouter"
         return Path.home() / "AppData" / "Local" / "FlashRouter"
-
     return Path.home() / ".local" / "share" / "flashrouter"
 
 
-def resolve_config_path(path: Path | str | None = None) -> Path:
+def resolve_config_path(path: Path | None = None) -> Path:
     if path is not None:
-        return Path(path).expanduser()
-
-    env_path = os.getenv("FLASHROUTER_CONFIG", "").strip()
-    if env_path:
-        return Path(env_path).expanduser()
-
+        return path.expanduser()
+    env = os.environ.get("FLASHROUTER_CONFIG")
+    if env:
+        return Path(env).expanduser()
     return default_data_dir() / "config.toml"
 
 
-class ServerConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+@dataclass
+class ServerConfig:
     host: str = DEFAULT_HOST
-    port: int = Field(default=DEFAULT_PORT, ge=1, le=65535)
-    log_level: Literal["debug", "info", "warning", "error"] = "info"
+    port: int = DEFAULT_PORT
+    log_level: str = "info"
 
 
-class GatewayConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    api_key: SecretStr | None = None
-
-    @field_validator("api_key")
-    @classmethod
-    def normalize_empty_api_key(cls, value: SecretStr | None) -> SecretStr | None:
-        if value is None or not value.get_secret_value().strip():
-            return None
-        return value
+@dataclass
+class AdminConfig:
+    token: str | None = None
 
 
-class UpstreamConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+@dataclass
+class Settings:
+    server: ServerConfig = field(default_factory=ServerConfig)
+    admin: AdminConfig = field(default_factory=AdminConfig)
+    data_dir: Path = field(default_factory=default_data_dir)
+    config_path: Path = field(default_factory=resolve_config_path)
+    token_saver: bool = True
+    max_retries: int = 2
+    connect_timeout: float = 10.0
+    request_timeout: float = 300.0
 
-    name: str = "upstream"
-    base_url: str
-    protocol: Literal["openai-chat"] = "openai-chat"
-    api_key: SecretStr | None = None
-    connect_timeout_seconds: float = Field(default=10.0, gt=0)
-    read_timeout_seconds: float = Field(default=180.0, gt=0)
-    verify_tls: bool = True
-    trust_env: bool = False
-    follow_redirects: bool = False
-    headers: dict[str, str] = Field(default_factory=dict)
+    @property
+    def database_path(self) -> Path:
+        return self.data_dir / "flashrouter.db"
 
-    @field_validator("base_url")
-    @classmethod
-    def base_url_must_be_http(cls, value: str) -> str:
-        value = value.strip().rstrip("/")
-        parts = urlsplit(value)
-        if parts.scheme not in {"http", "https"} or not parts.netloc:
-            raise ValueError("upstream.base_url must be an absolute http(s) URL")
-        if parts.query or parts.fragment:
-            raise ValueError("upstream.base_url must not contain a query string or fragment")
-        return value
-
-    @field_validator("api_key")
-    @classmethod
-    def normalize_empty_api_key(cls, value: SecretStr | None) -> SecretStr | None:
-        if value is None or not value.get_secret_value().strip():
-            return None
-        return value
-
-    @field_validator("headers")
-    @classmethod
-    def validate_custom_headers(cls, value: dict[str, str]) -> dict[str, str]:
-        normalized: dict[str, str] = {}
-        for name, header_value in value.items():
-            if not name.strip():
-                raise ValueError("upstream.headers contains a blank header name")
-            if not isinstance(header_value, str):
-                raise ValueError(f"upstream.headers[{name!r}] must be a string")
-            if name.lower() in FORBIDDEN_CUSTOM_HEADERS:
-                raise ValueError(f"upstream.headers must not contain {name!r}")
-            normalized[name] = header_value
-        return normalized
+    @property
+    def backups_dir(self) -> Path:
+        return self.data_dir / "backups"
 
 
-class ModelConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    upstream_model: str | None = None
-    owned_by: str | None = None
-    created: int = Field(default=0, ge=0)
-
-    @field_validator("id")
-    @classmethod
-    def id_must_not_be_blank(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("models[].id must not be blank")
-        return value
-
-    @field_validator("upstream_model")
-    @classmethod
-    def upstream_model_must_not_be_blank(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        if not value:
-            raise ValueError("models[].upstream_model must not be blank")
-        return value
-
-    @model_validator(mode="after")
-    def default_upstream_model(self) -> ModelConfig:
-        if self.upstream_model is None:
-            self.upstream_model = self.id
-        return self
-
-
-class AdminConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    secret_key: str = ""
-    enabled: bool = True
-
-    @field_validator("secret_key")
-    @classmethod
-    def _default_secret_key(cls, value: str) -> str:
-        if not value.strip():
-            import secrets as _secrets
-
-            return _secrets.token_urlsafe(32)
-        return value
-
-
-class Settings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    server: ServerConfig = Field(default_factory=ServerConfig)
-    gateway: GatewayConfig
-    upstream: UpstreamConfig
-    admin: AdminConfig = Field(default_factory=AdminConfig)
-    models: list[ModelConfig] = Field(default_factory=list)
-    config_path: Path | None = Field(default=None, exclude=True)
-    data_dir: Path = Field(default_factory=default_data_dir, exclude=True)
-
-    @model_validator(mode="after")
-    def models_must_be_unique(self) -> Settings:
-        ids = [model.id for model in self.models]
-        duplicates = sorted({model_id for model_id in ids if ids.count(model_id) > 1})
-        if duplicates:
-            raise ValueError(f"duplicate model ids: {', '.join(duplicates)}")
-        return self
-
-    def gateway_api_key(self) -> str:
-        return self.gateway.api_key.get_secret_value()
-
-    def upstream_api_key(self) -> str | None:
-        if self.upstream.api_key is None:
-            return None
-        return self.upstream.api_key.get_secret_value()
-
-    def admin_secret_key(self) -> str:
-        return self.admin.secret_key
-
-
-def _env(name: str) -> str | None:
-    value = os.getenv(name)
-    if value is None:
-        return None
-    return value.strip()
-
-
-def _env_bool(name: str) -> bool | None:
-    value = _env(name)
-    if value is None:
-        return None
-    lowered = value.lower()
-    if lowered in {"1", "true", "yes", "on"}:
-        return True
-    if lowered in {"0", "false", "no", "off"}:
-        return False
-    raise ConfigError(f"{name} must be a boolean (true/false)")
-
-
-def _env_int(name: str) -> int | None:
-    value = _env(name)
-    if value is None:
-        return None
+def _coerce_int(value: object, name: str) -> int:
     try:
-        return int(value)
-    except ValueError as exc:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
         raise ConfigError(f"{name} must be an integer") from exc
 
 
-def _env_float(name: str) -> float | None:
-    value = _env(name)
-    if value is None:
-        return None
+def _coerce_float(value: object, name: str) -> float:
     try:
-        return float(value)
-    except ValueError as exc:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
         raise ConfigError(f"{name} must be a number") from exc
 
 
-def _apply_env_overrides(raw: dict[str, Any]) -> dict[str, Any]:
-    data = copy.deepcopy(raw)
-    server = data.setdefault("server", {})
-    gateway = data.setdefault("gateway", {})
-    upstream = data.setdefault("upstream", {})
-    headers = upstream.setdefault("headers", {})
-
-    if (value := _env("FLASHROUTER_HOST")) is not None:
-        server["host"] = value
-    if (value_int := _env_int("FLASHROUTER_PORT")) is not None:
-        server["port"] = value_int
-    if (value := _env("FLASHROUTER_LOG_LEVEL")) is not None:
-        server["log_level"] = value.lower()
-
-    if (value := _env("FLASHROUTER_GATEWAY_API_KEY")) is not None:
-        gateway["api_key"] = value
-
-    for env_name, field_name in (
-        ("FLASHROUTER_UPSTREAM_NAME", "name"),
-        ("FLASHROUTER_UPSTREAM_BASE_URL", "base_url"),
-        ("FLASHROUTER_UPSTREAM_PROTOCOL", "protocol"),
-    ):
-        if (value := _env(env_name)) is not None:
-            upstream[field_name] = value
-
-    if (value := _env("FLASHROUTER_UPSTREAM_API_KEY")) is not None:
-        upstream["api_key"] = value
-
-    if (value_float := _env_float("FLASHROUTER_UPSTREAM_CONNECT_TIMEOUT_SECONDS")) is not None:
-        upstream["connect_timeout_seconds"] = value_float
-    if (value_float := _env_float("FLASHROUTER_UPSTREAM_READ_TIMEOUT_SECONDS")) is not None:
-        upstream["read_timeout_seconds"] = value_float
-
-    for env_name, field_name in (
-        ("FLASHROUTER_UPSTREAM_VERIFY_TLS", "verify_tls"),
-        ("FLASHROUTER_UPSTREAM_TRUST_ENV", "trust_env"),
-        ("FLASHROUTER_UPSTREAM_FOLLOW_REDIRECTS", "follow_redirects"),
-    ):
-        if (value_bool := _env_bool(env_name)) is not None:
-            upstream[field_name] = value_bool
-
-    if (value := _env("FLASHROUTER_UPSTREAM_HTTP_REFERER")) is not None:
-        headers["HTTP-Referer"] = value
-    if (value := _env("FLASHROUTER_UPSTREAM_TITLE")) is not None:
-        headers["X-OpenRouter-Title"] = value
-
-    if not headers:
-        upstream.pop("headers", None)
-    return data
+def _apply_env(settings: Settings) -> None:
+    env = os.environ
+    if "FLASHROUTER_HOST" in env:
+        settings.server.host = env["FLASHROUTER_HOST"]
+    if "FLASHROUTER_PORT" in env:
+        settings.server.port = _coerce_int(env["FLASHROUTER_PORT"], "FLASHROUTER_PORT")
+    if "FLASHROUTER_LOG_LEVEL" in env:
+        settings.server.log_level = env["FLASHROUTER_LOG_LEVEL"]
+    if "FLASHROUTER_DATA_DIR" in env:
+        settings.data_dir = Path(env["FLASHROUTER_DATA_DIR"]).expanduser()
+    if "FLASHROUTER_ADMIN_TOKEN" in env:
+        settings.admin.token = env["FLASHROUTER_ADMIN_TOKEN"] or None
+    if "FLASHROUTER_TOKEN_SAVER" in env:
+        settings.token_saver = env["FLASHROUTER_TOKEN_SAVER"].strip().lower() not in {
+            "0",
+            "false",
+            "off",
+            "no",
+        }
 
 
-def load_config(path: Path | str | None = None) -> Settings:
+def load_config(path: Path | None = None) -> Settings:
+    """Load settings. Missing file is not an error (defaults + dashboard setup)."""
     config_path = resolve_config_path(path)
-    data_dir = default_data_dir()
+    settings = Settings(config_path=config_path, data_dir=default_data_dir())
 
-    if not config_path.exists():
-        raise ConfigError(
-            f"Configuration file not found: {config_path}\n"
-            "Copy config.example.toml to that location and fill in the required keys, "
-            "or pass --config /path/to/config.toml."
-        )
+    if config_path.exists():
+        try:
+            raw = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"Invalid TOML in {config_path}: {exc}") from exc
+        except OSError as exc:
+            raise ConfigError(f"Cannot read {config_path}: {exc}") from exc
 
-    try:
-        with config_path.open("rb") as handle:
-            raw = tomllib.load(handle)
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"Invalid TOML in {config_path}: {exc}") from exc
-    except OSError as exc:
-        raise ConfigError(f"Could not read {config_path}: {exc}") from exc
+        server = raw.get("server", {}) or {}
+        if not isinstance(server, dict):
+            raise ConfigError("[server] must be a table")
+        if "host" in server:
+            settings.server.host = str(server["host"])
+        if "port" in server:
+            settings.server.port = _coerce_int(server["port"], "server.port")
+        if "log_level" in server:
+            settings.server.log_level = str(server["log_level"])
 
-    raw = _apply_env_overrides(raw)
-    raw["config_path"] = config_path
-    raw["data_dir"] = data_dir
+        admin = raw.get("admin", {}) or {}
+        if isinstance(admin, dict) and admin.get("token"):
+            settings.admin.token = str(admin["token"])
 
-    try:
-        return Settings.model_validate(raw)
-    except Exception as exc:
-        raise ConfigError(f"Invalid configuration in {config_path}: {exc}") from exc
+        gateway = raw.get("gateway", {}) or {}
+        if isinstance(gateway, dict):
+            if "token_saver" in gateway:
+                settings.token_saver = bool(gateway["token_saver"])
+            if "max_retries" in gateway:
+                settings.max_retries = _coerce_int(gateway["max_retries"], "gateway.max_retries")
+            if "connect_timeout" in gateway:
+                settings.connect_timeout = _coerce_float(
+                    gateway["connect_timeout"], "gateway.connect_timeout"
+                )
+            if "request_timeout" in gateway:
+                settings.request_timeout = _coerce_float(
+                    gateway["request_timeout"], "gateway.request_timeout"
+                )
+
+        # A config file next to data dir implies the data dir lives beside it.
+        if "FLASHROUTER_DATA_DIR" not in os.environ and path is None:
+            settings.data_dir = config_path.parent
+
+    _apply_env(settings)
+    if not (1 <= settings.server.port <= 65535):
+        raise ConfigError("server.port must be between 1 and 65535")
+    return settings
 
 
 def ensure_data_dirs(settings: Settings) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    (settings.data_dir / "logs").mkdir(parents=True, exist_ok=True)
-
-
-def mask_secret(secret: str | None) -> str:
-    if not secret:
-        return "<not set>"
-    if len(secret) <= 8:
-        return "*" * len(secret)
-    return f"{secret[:4]}...{secret[-4:]}"
-
-
-def is_configured(settings: Settings) -> bool:
-    """Return True if a config file exists and has a gateway API key."""
-    if not settings.config_path or not settings.config_path.exists():
-        return False
-    if settings.gateway.api_key is None:
-        return False
-    return bool(settings.gateway.api_key.get_secret_value().strip())
-
-
-def save_config(settings: Settings) -> None:
-    """Persist Settings to TOML at config_path."""
-    config_path = settings.config_path or resolve_config_path()
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    lines: list[str] = []
-
-    lines.append("[server]")
-    lines.append(f'host = "{settings.server.host}"')
-    lines.append(f"port = {settings.server.port}")
-    lines.append(f'log_level = "{settings.server.log_level}"')
-    lines.append("")
-
-    lines.append("[gateway]")
-    if settings.gateway.api_key is not None:
-        lines.append(f'api_key = "{settings.gateway.api_key.get_secret_value()}"')
-    lines.append("")
-
-    lines.append("[upstream]")
-    lines.append(f'name = "{settings.upstream.name}"')
-    lines.append(f'base_url = "{settings.upstream.base_url}"')
-    lines.append(f'protocol = "{settings.upstream.protocol}"')
-    if settings.upstream.api_key is not None:
-        lines.append(f'api_key = "{settings.upstream.api_key.get_secret_value()}"')
-    lines.append(f"connect_timeout_seconds = {settings.upstream.connect_timeout_seconds}")
-    lines.append(f"read_timeout_seconds = {settings.upstream.read_timeout_seconds}")
-    lines.append(f"verify_tls = {str(settings.upstream.verify_tls).lower()}")
-    lines.append(f"trust_env = {str(settings.upstream.trust_env).lower()}")
-    lines.append(f"follow_redirects = {str(settings.upstream.follow_redirects).lower()}")
-    if settings.upstream.headers:
-        lines.append("[upstream.headers]")
-        for k, v in settings.upstream.headers.items():
-            lines.append(f'{k} = "{v}"')
-    lines.append("")
-
-    lines.append("[admin]")
-    lines.append(f'secret_key = "{settings.admin.secret_key}"')
-    lines.append(f"enabled = {str(settings.admin.enabled).lower()}")
-    lines.append("")
-
-    for m in settings.models:
-        lines.append("[[models]]")
-        lines.append(f'id = "{m.id}"')
-        lines.append(f'upstream_model = "{m.upstream_model}"')
-        if m.owned_by is not None:
-            lines.append(f'owned_by = "{m.owned_by}"')
-        lines.append(f"created = {m.created}")
-        lines.append("")
-
-    with config_path.open("w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines))
-
+    settings.backups_dir.mkdir(parents=True, exist_ok=True)

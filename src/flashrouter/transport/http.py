@@ -4,37 +4,22 @@ from __future__ import annotations
 
 import httpx
 
-from flashrouter.config import UpstreamConfig
+from flashrouter.config import Settings
 
 
-def create_http_client(upstream: UpstreamConfig) -> httpx.AsyncClient:
+def create_client(settings: Settings) -> httpx.AsyncClient:
     timeout = httpx.Timeout(
-        connect=upstream.connect_timeout_seconds,
-        read=upstream.read_timeout_seconds,
-        write=upstream.read_timeout_seconds,
-        pool=upstream.connect_timeout_seconds,
+        connect=settings.connect_timeout,
+        read=settings.request_timeout,
+        write=settings.request_timeout,
+        pool=settings.connect_timeout,
     )
-    limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+    limits = httpx.Limits(max_connections=200, max_keepalive_connections=40)
     return httpx.AsyncClient(
         timeout=timeout,
         limits=limits,
-        verify=upstream.verify_tls,
-        trust_env=upstream.trust_env,
-        follow_redirects=upstream.follow_redirects,
+        verify=True,
+        trust_env=False,
+        follow_redirects=False,
         headers={},
     )
-
-
-class HttpxTransport:
-    def __init__(self, client: httpx.AsyncClient) -> None:
-        self._client = client
-
-    @property
-    def client(self) -> httpx.AsyncClient:
-        return self._client
-
-    async def send(self, request: httpx.Request) -> httpx.Response:
-        return await self._client.send(request)
-
-    async def stream(self, request: httpx.Request) -> httpx.Response:
-        return await self._client.send(request, stream=True)

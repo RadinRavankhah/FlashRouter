@@ -1,156 +1,130 @@
-"""Inference endpoints."""
+"""OpenAI-compatible inference endpoints."""
 
 from __future__ import annotations
 
-import json
+from typing import Any
 
 from fastapi import APIRouter, Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse
 
-from flashrouter.auth import require_gateway_key
-from flashrouter.errors import invalid_request
-from flashrouter.storage.repository import RequestRepository
-from flashrouter.protocols.anthropic_messages import AnthropicMessagesAdapter
-from flashrouter.protocols.responses_adapter import ResponsesAdapter
+from flashrouter.errors import bad_request, forbidden, unauthorized
 
-router = APIRouter(prefix="/v1", tags=["inference"])
+router = APIRouter(prefix="/v1")
 
 
-def _get_repository(request: Request) -> RequestRepository:
-    repo = request.app.state.request_repository
-    if repo is None:
-        raise invalid_request(
-            "Request history storage is not available", code="storage_unavailable"
-        )
-    return repo
+def _bearer(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.headers.get("x-api-key", "").strip()
+
+
+async def authenticate(request: Request) -> dict[str, Any] | None:
+    """Return the key row, or None when the gateway has no keys yet.
+
+    Authentication is only enforced once at least one client key exists, so a
+    fresh install can be used immediately after setup.
+    """
+    repo = request.app.state.repository
+    if await repo.count_keys() == 0:
+        return None
+    token = _bearer(request)
+    if not token:
+        raise unauthorized()
+    key = await repo.get_key_by_token(token)
+    if key is None:
+        raise unauthorized()
+    if not key["enabled"]:
+        raise forbidden()
+    return key
+
+
+def _token_saver_override(request: Request) -> bool | None:
+    value = request.headers.get("x-flashrouter-token-saver", "").strip().lower()
+    if value in {"off", "false", "0", "no", "disabled"}:
+        return False
+    if value in {"on", "true", "1", "yes", "enabled"}:
+        return True
+    return None
+
+
+async def _json_body(request: Request) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise bad_request("Request body must be valid JSON") from exc
+    if not isinstance(body, dict):
+        raise bad_request("Request body must be a JSON object")
+    return body
 
 
 @router.post("/chat/completions")
-async def chat_completions(request: Request) -> Response:
-    gateway_key_id = await require_gateway_key(request)
-
-    raw_body = await request.body()
-    try:
-        payload = json.loads(raw_body)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise invalid_request("Request body must be valid JSON") from exc
-
-    repo = _get_repository(request)
-    request_id = request.state.request_id
-    model_id = payload.get("model") if isinstance(payload, dict) else None
-    wants_stream = isinstance(payload, dict) and payload.get("stream") is True
-
-    # Persist the initial request record and incoming body before any upstream
-    # dispatch. If persistence fails, reject the request without calling upstream
-    # (no unlogged spend).
-    try:
-        await repo.create_request(
-            request_id=request_id,
-            gateway_key_id=gateway_key_id or "default",
-            client_ip=request.client.host if request.client else None,
-            method=request.method,
-            path=request.url.path,
-            protocol="openai-chat",
-            mode="stream" if wants_stream else "complete",
-            model_id=model_id or "",
-            upstream_model=None,
-        )
-        await repo.add_payload(
-            request_id=request_id,
-            kind="request_incoming",
-            body_bytes=raw_body,
-        )
-    except Exception as exc:
-        from flashrouter.errors import GatewayError
-
-        raise GatewayError(
-            status_code=500,
-            message="Request history storage failed",
-            code="storage_unavailable",
-        ) from exc
-
-    proxy = request.app.state.proxy
-    if wants_stream:
-        return await proxy.stream(payload, request_id, model_id=model_id)
-    return await proxy.complete(payload, request_id, model_id=model_id)
-
-
-@router.post("/messages")
-async def anthropic_messages(request: Request) -> Response:
-    gateway_key_id = await require_gateway_key(request)
-    raw_body = await request.body()
-    try:
-        payload = json.loads(raw_body)
-    except Exception as exc:
-        raise invalid_request("Invalid JSON") from exc
-    repo = _get_repository(request)
-    request_id = request.state.request_id
-    model_id = payload.get("model") if isinstance(payload, dict) else None
-    wants_stream = isinstance(payload, dict) and payload.get("stream") is True
-    await repo.create_request(
-        request_id=request_id,
-        gateway_key_id=gateway_key_id or "default",
-        client_ip=request.client.host if request.client else None,
-        method=request.method,
-        path=request.url.path,
-        protocol="anthropic-messages",
-        mode="stream" if wants_stream else "complete",
-        model_id=model_id or "",
-        upstream_model=None,
+async def chat_completions(request: Request):
+    key = await authenticate(request)
+    body = await _json_body(request)
+    if key is not None:
+        await request.app.state.repository.touch_key(key["id"])
+    engine = request.app.state.engine
+    return await engine.handle(
+        body=body,
+        key=key,
+        request_id=request.state.request_id,
+        endpoint="chat/completions",
+        stream=bool(body.get("stream")),
+        token_saver=_token_saver_override(request),
     )
-    await repo.add_payload(request_id=request_id, kind="request_incoming", body_bytes=raw_body)
-    adapter = AnthropicMessagesAdapter()
-    proxy = request.app.state.proxy
-    if wants_stream:
-        return await proxy.stream(payload, request_id, model_id=model_id, adapter=adapter)
-    return await proxy.complete(payload, request_id, model_id=model_id, adapter=adapter)
 
 
 @router.post("/responses")
-async def responses(request: Request) -> Response:
-    gateway_key_id = await require_gateway_key(request)
-    raw_body = await request.body()
-    try:
-        payload = json.loads(raw_body)
-    except Exception as exc:
-        raise invalid_request("Invalid JSON") from exc
-    repo = _get_repository(request)
-    request_id = request.state.request_id
-    model_id = payload.get("model") if isinstance(payload, dict) else None
-    wants_stream = isinstance(payload, dict) and payload.get("stream") is True
-    await repo.create_request(
-        request_id=request_id,
-        gateway_key_id=gateway_key_id or "default",
-        client_ip=request.client.host if request.client else None,
-        method=request.method,
-        path=request.url.path,
-        protocol="responses",
-        mode="stream" if wants_stream else "complete",
-        model_id=model_id or "",
-        upstream_model=None,
+async def responses(request: Request):
+    key = await authenticate(request)
+    body = await _json_body(request)
+    if key is not None:
+        await request.app.state.repository.touch_key(key["id"])
+    engine = request.app.state.engine
+    return await engine.handle(
+        body=body,
+        key=key,
+        request_id=request.state.request_id,
+        endpoint="responses",
+        stream=bool(body.get("stream")),
     )
-    await repo.add_payload(request_id=request_id, kind="request_incoming", body_bytes=raw_body)
-    adapter = ResponsesAdapter()
-    proxy = request.app.state.proxy
-    if wants_stream:
-        return await proxy.stream(payload, request_id, model_id=model_id, adapter=adapter)
-    return await proxy.complete(payload, request_id, model_id=model_id, adapter=adapter)
 
 
 @router.get("/models")
-async def list_models(request: Request) -> dict:
-    await require_gateway_key(request)
+async def list_models(request: Request):
+    await authenticate(request)
+    repo = request.app.state.repository
+    data: list[dict[str, Any]] = []
+    seen: set[str] = set()
 
-    repo = _get_repository(request)
-    aliases = await repo.list_model_aliases()
-    data = [
-        {
-            "id": a["alias"],
-            "object": "model",
-            "created": 0,
-            "owned_by": a.get("provider_name", "unknown"),
-        }
-        for a in aliases
-        if a.get("alias_enabled", 1)
-    ]
-    return {"object": "list", "data": data}
+    for combo in await repo.list_combos():
+        if not combo["enabled"]:
+            continue
+        seen.add(combo["name"])
+        data.append(
+            {
+                "id": combo["name"],
+                "object": "model",
+                "created": 0,
+                "owned_by": "flashrouter",
+            }
+        )
+
+    for model in await repo.list_models():
+        if not model["enabled"]:
+            continue
+        model_id = f"{model['provider_name']}/{model['model']}"
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        data.append(
+            {
+                "id": model_id,
+                "object": "model",
+                "created": 0,
+                "owned_by": model["provider_name"],
+            }
+        )
+
+    return JSONResponse({"object": "list", "data": data})
