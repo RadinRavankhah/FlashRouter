@@ -34,4 +34,5 @@ Windows PowerShell uses `& .venv\Scripts\pytest.exe -q` etc.
 - Scope is **OpenAI-compatible providers only** (no Anthropic/Gemini-native translation).
 - Never forward client `Authorization`/cookies upstream; use the selected account secret.
 - Fall back to another target only **before** any bytes are streamed to the client.
-- Cost values are estimates, not billing.
+- Cost values are estimates, not billing. Cost uses per-model input/output prices
+  plus an optional discounted `price_cache_in`; cache tokens are subsets of input.

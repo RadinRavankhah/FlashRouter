@@ -56,7 +56,7 @@ Open `http://127.0.0.1:20128` → add a provider → create a combo → use `/v1
 3. For each candidate (fallback order):
    - Choose eligible account (enabled, not cooling, under quota): priority then weighted
      round-robin.
-   - Apply RTK token saver to `tool`/`tool_result` content.
+   - Apply RTK token saver to `role: "tool"` message content.
    - Dispatch to `base_url` + `/chat/completions` (or `/responses`) with account secret.
    - **Streaming:** pass through SSE incrementally; never buffer the whole response for
      the client.
@@ -100,15 +100,20 @@ docs/ROADMAP.md          # this file
 
 ## Admin API (localhost-only, origin/CSRF protected, optional admin token)
 
-- `GET /admin/api/setup/status`, `POST /admin/api/setup` (first-run)
-- `GET/POST/PUT/DELETE /admin/api/providers`, `GET /admin/api/providers/presets`
-- `POST /admin/api/providers/{id}/test`, `POST /admin/api/providers/{id}/discover`
-- `GET/POST/PUT/DELETE /admin/api/providers/{id}/accounts`, `POST .../test`
-- `GET/POST/PUT/DELETE /admin/api/combos`, `PUT .../targets` (reorder)
-- `GET/POST/PUT/DELETE /admin/api/keys`, `POST .../reveal`
-- `GET /admin/api/requests`, `GET /admin/api/requests/{id}`
-- `GET /admin/api/stats` (overview, usage, cost/savings, success, TTFT, timeseries)
 - `GET /admin/api/health`
+- `GET/POST /admin/api/providers`, `PUT/DELETE /admin/api/providers/{id}`,
+  `GET /admin/api/providers/presets`
+- `POST /admin/api/providers/{id}/test`, `POST /admin/api/providers/{id}/discover`
+- `GET/POST /admin/api/providers/{id}/accounts`, `PUT/DELETE /admin/api/accounts/{id}`,
+  `GET .../accounts/{id}/reveal`, `POST .../accounts/{id}/test`
+- `GET/POST /admin/api/combos`, `PUT/DELETE /admin/api/combos/{id}`
+  (target order is the `targets` array on update)
+- `GET/POST /admin/api/models`, `PUT/DELETE /admin/api/models/{id}` (pricing)
+- `GET/POST /admin/api/keys`, `PUT/DELETE /admin/api/keys/{id}`,
+  `GET .../keys/{id}/reveal`
+- `GET /admin/api/requests`, `GET /admin/api/requests/{id}`
+- `GET /admin/api/stats` (overview, usage, cache reads, cost, success, timeseries)
+- `GET/PUT /admin/api/settings`
 
 ## Milestones
 
@@ -120,7 +125,8 @@ docs/ROADMAP.md          # this file
 | M3 | Inference API (chat/models/responses) + RTK saver | done |
 | M4 | Admin API (providers/accounts/combos/keys/requests/stats) | done |
 | M5 | Dashboard redesign + committed dist | done |
-| M6 | README rewrite, tests, ruff + tsc, version bump | mostly done |
+| M6 | README rewrite, tests, ruff + tsc, version bump | done |
+| M7 | Cache read/write token tracking, cache-aware pricing, Models page | done |
 
 ## Definition of done
 
@@ -131,7 +137,7 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
 
 ## Status
 
-- **Phase:** M0–M5 complete; M6 polish.
+- **Phase:** M0–M7 complete.
 - **Working now:**
   - New core package (config, storage/migrations, repository, providers presets,
     router, engine, RTK saver, usage).
@@ -139,8 +145,10 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
     pass-through, `/healthz`.
   - Auto-fallback across combo targets with account cooldown + weighted rotation.
   - Full admin API + redesigned React dashboard (built into `ui/dist`).
+  - Cache read/write token tracking, per-model pricing (including cache-read price)
+    and a Models page.
   - CLI: run/doctor/backup/restore/reset-admin/version/open + bootstrap launchers.
-  - 21 tests passing; ruff clean; `ui` builds.
+  - 33 tests passing; ruff clean; `ui` builds.
 - **Known gaps / next:**
   - Add more tests (cooldown, admin CRUD, RTK edge cases, restore CLI).
   - `/v1/responses` is pass-through only (no chat↔responses translation).
@@ -159,3 +167,10 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   `flashrouter.legacy-<timestamp>.db` before creating the new schema. All DDL is now
   `IF NOT EXISTS`. Removed automatic browser launch from `flashrouter run` (the CLI
   prints the URL instead). Added migration/legacy tests (25 total).
+- (session 4) Removed dead admin endpoints (`setup/status`, single provider/combo
+  GETs) and the unused `by_model` stats query; de-duplicated `StatusBadge`; dropped
+  the unused `--warn` CSS variable; marked the POSIX launcher executable; removed a
+  stale `.agents` dependency note. Added schema v3 cache columns (`cache_read_tokens`,
+  `cache_write_tokens`, `price_cache_in`), cache-aware usage extraction for
+  OpenAI/Responses/DeepSeek/Anthropic-style payloads, discounted cost estimation,
+  cache counters in the dashboard, and a Models pricing page (33 tests).
