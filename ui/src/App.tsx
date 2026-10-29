@@ -1,92 +1,89 @@
 import { useEffect, useState } from "react";
-import { NavLink, Route, Routes, useNavigate } from "react-router-dom";
-import { GitBranch, KeyRound, LayoutDashboard, Moon, ScrollText, Server, Settings as SettingsIcon, Sun } from "lucide-react";
-import { OverviewPage } from "./overview";
-import { SetupPage, ProvidersPage, CredentialsPage, KeysPage, RequestsPage, SettingsPage, RoutesPage } from "./pages";
+import { NavLink, Route, Routes } from "react-router-dom";
+import {
+  Activity,
+  Cable,
+  KeyRound,
+  ScrollText,
+  Settings as SettingsIcon,
+  Waypoints,
+} from "lucide-react";
+import { api } from "./api";
+import { ToastProvider } from "./components";
+import type { Health } from "./types";
+import Overview from "./pages/Overview";
+import Connections from "./pages/Connections";
+import Combos from "./pages/Combos";
+import Keys from "./pages/Keys";
+import Requests from "./pages/Requests";
+import RequestDetail from "./pages/RequestDetail";
+import Settings from "./pages/Settings";
 
 const NAV = [
-  { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
-  { to: "/requests", label: "Requests", icon: ScrollText, end: false },
-  { to: "/keys", label: "Gateway keys", icon: KeyRound, end: false },
-  { to: "/providers", label: "Providers", icon: Server, end: false },
-  { to: "/credentials", label: "Credentials", icon: KeyRound, end: false },
-  { to: "/routes", label: "Models & aliases", icon: GitBranch, end: false },
-  { to: "/settings", label: "Settings", icon: SettingsIcon, end: false },
+  { to: "/", label: "Overview", icon: Activity, end: true },
+  { to: "/connections", label: "Connections", icon: Cable },
+  { to: "/combos", label: "Combos", icon: Waypoints },
+  { to: "/keys", label: "API keys", icon: KeyRound },
+  { to: "/requests", label: "Requests", icon: ScrollText },
+  { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
-export default function App() {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const [configured, setConfigured] = useState<boolean | null>(null);
-  const navigate = useNavigate();
+function Sidebar() {
+  const [health, setHealth] = useState<Health | null>(null);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
-
-  useEffect(() => {
-    fetch("/admin/setup/status")
-      .then((r) => r.json())
-      .then((s) => {
-        setConfigured(s.configured);
-        if (!s.configured && window.location.pathname !== "/setup") {
-          navigate("/setup");
-        }
-      });
-  }, [navigate]);
-
-  if (configured === null) {
-    return (
-      <div className="app">
-        <div style={{ padding: "40px", textAlign: "center" }}>Loading…</div>
-      </div>
-    );
-  }
-
-  if (configured === false) {
-    return <SetupPage />;
-  }
+    api
+      .get<Health>("/admin/api/health")
+      .then(setHealth)
+      .catch(() => undefined);
+  }, []);
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="logo">G</div>
-          <div>
-            <div className="brand-name">Gateway</div>
-            <div className="brand-sub">local LLM proxy</div>
-          </div>
+    <aside className="sidebar">
+      <div className="brand">
+        <div className="brand-mark">F</div>
+        <div>
+          <div className="brand-name">FlashRouter</div>
+          <div className="brand-sub">OpenAI-compatible router</div>
         </div>
+      </div>
+      {NAV.map(({ to, label, icon: Icon, end }) => (
+        <NavLink
+          key={to}
+          to={to}
+          end={end}
+          className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}
+        >
+          <Icon size={17} />
+          {label}
+        </NavLink>
+      ))}
+      <div className="sidebar-foot">
+        <span>API base · /v1</span>
+        <span>{health ? `v${health.version}` : "connecting…"}</span>
+      </div>
+    </aside>
+  );
+}
 
-        <nav>
-          {NAV.map(({ to, label, icon: Icon, end }) => (
-            <NavLink key={to} to={to} end={end} className="nav-link">
-              <Icon size={18} />
-              <span>{label}</span>
-            </NavLink>
-          ))}
-        </nav>
-
-        <div className="sidebar-foot">
-          <div><span className="live-dot" />Proxy running</div>
-          <div className="small">127.0.0.1:8787</div>
-          <button className="ghost theme-toggle" onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}>
-            {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
-            <span>{theme === "dark" ? "Light" : "Dark"} mode</span>
-          </button>
-        </div>
-      </aside>
-
-      <main className="main">
-        <Routes>
-          <Route path="/" element={<OverviewPage />} />
-          <Route path="/requests" element={<RequestsPage />} />
-          <Route path="/keys" element={<KeysPage />} />
-          <Route path="/providers" element={<ProvidersPage />} />
-          <Route path="/credentials" element={<CredentialsPage />} />
-          <Route path="/routes" element={<RoutesPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
-      </main>
-    </div>
+export default function App() {
+  return (
+    <ToastProvider>
+      <div className="app-shell">
+        <Sidebar />
+        <main className="main">
+          <Routes>
+            <Route path="/" element={<Overview />} />
+            <Route path="/connections" element={<Connections />} />
+            <Route path="/combos" element={<Combos />} />
+            <Route path="/keys" element={<Keys />} />
+            <Route path="/requests" element={<Requests />} />
+            <Route path="/requests/:id" element={<RequestDetail />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="*" element={<Overview />} />
+          </Routes>
+        </main>
+      </div>
+    </ToastProvider>
   );
 }
