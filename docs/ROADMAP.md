@@ -146,9 +146,11 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   - Auto-fallback across combo targets with account cooldown + weighted rotation.
   - Full admin API + redesigned React dashboard (built into `ui/dist`).
   - Cache read/write token tracking, per-model pricing (including cache-read price)
-    and a Models page.
+    and a Models page with search, provider filtering, and pagination.
+  - Provider discovery imports model prices when the upstream `/models` payload
+    includes them.
   - CLI: run/doctor/backup/restore/reset-admin/version/open + bootstrap launchers.
-  - 33 tests passing; ruff clean; `ui` builds.
+  - 40 tests passing; ruff clean; `ui` builds.
 - **Known gaps / next:**
   - Add more tests (cooldown, admin CRUD, RTK edge cases, restore CLI).
   - `/v1/responses` is pass-through only (no chat↔responses translation).
@@ -174,3 +176,9 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   `cache_write_tokens`, `price_cache_in`), cache-aware usage extraction for
   OpenAI/Responses/DeepSeek/Anthropic-style payloads, discounted cost estimation,
   cache counters in the dashboard, and a Models pricing page (33 tests).
+- (session 5) Models page now has search, provider filtering, and 25-per-page
+  pagination; fixed the page background gradient so it stays put while scrolling.
+  Discover imports upstream prices (OpenRouter `pricing.prompt`/`completion`,
+  Together-style per-token values, generic per-1M values), normalizes them to USD
+  per 1M, backfills unpriced models, and preserves manual prices. Added pricing
+  parser unit tests and a discovery integration test (40 tests).

@@ -34,7 +34,8 @@ and a **token saver** — all managed from a local dashboard.
 - **RTK token saver** — compresses large tool outputs (`git diff`, `grep`, `ls`,
   logs) before they are sent upstream. Fails open; never inflates a payload.
 - **Usage & cost tracking** — records input/output **and cache read/write tokens**,
-  with per-model pricing and discounted cache-read rates.
+  with per-model pricing, discounted cache-read rates, and automatic price import
+  during discovery when the provider exposes it.
 - **Dashboard** — providers, accounts, combos, models/pricing, API keys, request
   logs and usage.
 - **Local & private** — SQLite storage, binds to `127.0.0.1` by default.
@@ -43,16 +44,22 @@ and a **token saver** — all managed from a local dashboard.
 > translate Anthropic Messages or Gemini-native protocols, and does not use
 > subscription OAuth. Anything that talks OpenAI-compatible HTTP works.
 
-## Quick start
+## Clone and run
 
 Requires **Python 3.11+**. Node is only needed if you rebuild the dashboard.
 
-### Option A — one command (bootstraps a venv)
+### 1. Clone the repository
 
 ```bash
 git clone <your-repo-url> FlashRouter
 cd FlashRouter
+```
 
+### 2. Install and start
+
+#### Option A — one command (bootstraps a venv)
+
+```bash
 # Windows
 flashrouter.cmd run
 # macOS / Linux
@@ -61,7 +68,7 @@ flashrouter.cmd run
 
 The launcher creates `.venv`, installs the project, and starts the gateway.
 
-### Option B — standard install
+#### Option B — standard install
 
 ```bash
 python -m venv .venv
@@ -70,18 +77,44 @@ pip install -e .
 flashrouter run
 ```
 
-Then open the URL printed by the CLI (**http://127.0.0.1:20128** by default) in
-your browser.
+### 3. Open the dashboard
+
+Open the URL printed by the CLI (**http://127.0.0.1:20128** by default).
+The first-run walkthrough below configures a provider, account, combo, and API
+key, after which any OpenAI-compatible client can use it.
+
+### Update an existing clone
+
+Pull the latest code and restart:
+
+```bash
+git pull
+flashrouter.cmd run        # Windows
+# ./flashrouter run        # macOS / Linux
+```
+
+If you used Option B, reinstall first when dependencies changed:
+
+```bash
+pip install -e .
+flashrouter run
+```
+
+Your database, config, and backups stay in the platform data directory
+(see [Configuration](#configuration)) and survive updates.
 
 ## First-run walkthrough
 
 1. **Connections → Add provider.** Pick a preset (or *Custom*), paste the base URL.
 2. **Add account.** Paste your provider API key (leave blank for local servers).
-   Add more accounts for rotation if you like.
+   Add more accounts for rotation if you like. **Discover** then imports the
+   provider's model list; when the provider includes pricing in its `/models`
+   response (OpenRouter does), prices are filled in automatically.
 3. **Combos → Create combo.** Give it a name such as `coding-fast` and add one or
    more `provider / model` targets. Requests try them top to bottom.
-4. **Models → set prices.** Enter input/output prices per 1M tokens, plus an optional
-   cache-read price so prompt-caching discounts show up in cost estimates.
+4. **Models → review prices.** Enter input/output prices per 1M tokens, plus an
+   optional cache-read price so prompt-caching discounts show up in cost estimates.
+   Search, filter by provider, and page through the catalog.
 5. **API keys → Create key.** Copy the token.
 6. Point your client at `http://127.0.0.1:20128/v1` with that token and use the
    combo name as the model.
@@ -165,6 +198,13 @@ Leave the cache-read price blank to bill cached input at the normal input price.
 Set it to the provider's discounted rate (for example `0.25` when cached input is
 a quarter of the normal price) to see realistic savings. Costs are still
 estimates, not billing.
+
+**Discover** imports prices from the provider's `/models` payload when present
+(OpenRouter most reliably; some Together/Fireworks entries too) and normalizes
+them to USD per 1M tokens. Most providers (OpenAI, Groq, DeepSeek, Mistral, …)
+return IDs only, so those models are added with zero prices and can be edited
+manually. Re-running Discover fills prices for models that are still unpriced
+and leaves manually priced models untouched.
 
 Cache read tokens appear on the Overview (today's cache reads and hit rate), in
 the Requests table, on each request/attempt detail, and in per-account counters.
