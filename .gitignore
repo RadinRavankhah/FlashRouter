@@ -1,17 +1,21 @@
+# Dependencies / build tools
 /ui/node_modules
-
-# Python
 .venv/
 venv/
+
+# Python artifacts
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
-build/
-dist/
+/build/
+/dist/
 htmlcov/
 .coverage
+
+# The built dashboard is committed on purpose so `flashrouter run` needs no Node.
+!/ui/dist/
 
 # Local configuration and runtime data
 config.toml
@@ -19,4 +23,8 @@ config.toml
 .env
 logs/
 data/
+backups/
 diagnostics/
+*.db
+*.db-wal
+*.db-shm

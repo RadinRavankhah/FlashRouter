@@ -22,17 +22,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--base-url",
-        default=os.getenv("FLASHROUTER_BASE_URL", "http://127.0.0.1:8787/v1"),
+        default=os.getenv("FLASHROUTER_BASE_URL", "http://127.0.0.1:20128/v1"),
     )
     parser.add_argument(
         "--api-key",
-        default=os.getenv("FLASHROUTER_GATEWAY_API_KEY"),
+        default=os.getenv("FLASHROUTER_API_KEY") or os.getenv("FLASHROUTER_GATEWAY_API_KEY"),
     )
     parser.add_argument("--model", default=os.getenv("FLASHROUTER_MODEL", "coding-fast"))
     args = parser.parse_args()
 
     if not args.api_key:
-        parser.error("--api-key or FLASHROUTER_GATEWAY_API_KEY is required")
+        parser.error("--api-key or FLASHROUTER_API_KEY is required")
 
     client = OpenAI(api_key=args.api_key, base_url=args.base_url)
     model = args.model
