@@ -224,19 +224,21 @@ class ChatCompletionsProxy:
     def _prepare_legacy(
         self,
         payload: Any,
+        adapter: ProtocolAdapter | None = None,
     ) -> tuple[str, str, bool, httpx.Request, dict[str, Any] | None, str | None]:
         """Legacy resolution using settings.upstream + ConfiguredModelResolver."""
-        body = self._adapter.validate_request(payload)
+        use_adapter = adapter if adapter is not None else self._adapter
+        body = use_adapter.validate_request(payload)
         requested_model = body["model"]
         model = self._resolver.resolve(requested_model)
         upstream_model = model.upstream_model or model.id
-        upstream_body = self._adapter.prepare_body(body, upstream_model)
-        stream = self._adapter.is_stream(body)
+        upstream_body = use_adapter.prepare_body(body, upstream_model)
+        stream = use_adapter.is_stream(body)
         request = self._build_request(
             upstream_body,
             stream=stream,
             base_url=self._settings.upstream.base_url,
-            adapter_path=self._adapter.chat_path(),
+            adapter_path=use_adapter.chat_path(),
             api_key=self._settings.upstream_api_key(),
         )
         return requested_model, upstream_model, stream, request, None, None
@@ -245,13 +247,15 @@ class ChatCompletionsProxy:
         self,
         payload: Any,
         resolved: dict[str, Any],
+        adapter: ProtocolAdapter | None = None,
     ) -> tuple[str, str, bool, httpx.Request, dict[str, Any] | None, str | None]:
         """DB-backed resolution using provider + credential from alias."""
-        body = self._adapter.validate_request(payload)
+        use_adapter = adapter if adapter is not None else self._adapter
+        body = use_adapter.validate_request(payload)
         requested_model = body["model"]
         upstream_model = resolved.get("upstream_model") or requested_model
-        upstream_body = self._adapter.prepare_body(body, upstream_model)
-        stream = self._adapter.is_stream(body)
+        upstream_body = use_adapter.prepare_body(body, upstream_model)
+        stream = use_adapter.is_stream(body)
 
         base_url = resolved.get("base_url", "")
         api_key = resolved.get("secret")
@@ -268,7 +272,7 @@ class ChatCompletionsProxy:
             upstream_body,
             stream=stream,
             base_url=base_url,
-            adapter_path=self._adapter.chat_path(),
+            adapter_path=use_adapter.chat_path(),
             api_key=api_key,
             extra_headers=extra_headers,
         )
@@ -294,19 +298,21 @@ class ChatCompletionsProxy:
     async def _prepare(
         self,
         payload: Any,
+        adapter: ProtocolAdapter | None = None,
     ) -> tuple[str, str, bool, httpx.Request, dict[str, Any] | None, str | None]:
         """Resolve model: try DB alias first, fall back to legacy settings."""
-        body = self._adapter.validate_request(payload)
+        use_adapter = adapter if adapter is not None else self._adapter
+        body = use_adapter.validate_request(payload)
         requested_model = body["model"]
 
         if self._repository is not None:
             resolved = await self._repository.resolve_alias(requested_model)
             if resolved:
-                return self._prepare_db(payload, resolved)
+                return self._prepare_db(payload, resolved, adapter=adapter)
 
         # Fall back to legacy settings-based resolution.
         if self._settings.upstream.base_url:
-            return self._prepare_legacy(payload)
+            return self._prepare_legacy(payload, adapter=adapter)
 
         raise invalid_request(
             f"Model '{requested_model}' not configured. Add it via the dashboard.",
@@ -319,9 +325,10 @@ class ChatCompletionsProxy:
         request_id: str,
         *,
         model_id: str | None = None,
+        adapter: ProtocolAdapter | None = None,
     ) -> Response:
         requested_model, upstream_model, stream, upstream_request, provider, credential_id = (
-            await self._prepare(payload)
+            await self._prepare(payload, adapter=adapter)
         )
         started = perf_counter()
 
@@ -467,9 +474,10 @@ class ChatCompletionsProxy:
         request_id: str,
         *,
         model_id: str | None = None,
+        adapter: ProtocolAdapter | None = None,
     ) -> Response:
         requested_model, upstream_model, stream, upstream_request, provider, credential_id = (
-            await self._prepare(payload)
+            await self._prepare(payload, adapter=adapter)
         )
         started = perf_counter()
 

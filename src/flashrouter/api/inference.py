@@ -10,6 +10,8 @@ from starlette.responses import Response
 from flashrouter.auth import require_gateway_key
 from flashrouter.errors import invalid_request
 from flashrouter.storage.repository import RequestRepository
+from flashrouter.protocols.anthropic_messages import AnthropicMessagesAdapter
+from flashrouter.protocols.responses_adapter import ResponsesAdapter
 
 router = APIRouter(prefix="/v1", tags=["inference"])
 
@@ -71,6 +73,68 @@ async def chat_completions(request: Request) -> Response:
     if wants_stream:
         return await proxy.stream(payload, request_id, model_id=model_id)
     return await proxy.complete(payload, request_id, model_id=model_id)
+
+
+@router.post("/messages")
+async def anthropic_messages(request: Request) -> Response:
+    gateway_key_id = await require_gateway_key(request)
+    raw_body = await request.body()
+    try:
+        payload = json.loads(raw_body)
+    except Exception as exc:
+        raise invalid_request("Invalid JSON") from exc
+    repo = _get_repository(request)
+    request_id = request.state.request_id
+    model_id = payload.get("model") if isinstance(payload, dict) else None
+    wants_stream = isinstance(payload, dict) and payload.get("stream") is True
+    await repo.create_request(
+        request_id=request_id,
+        gateway_key_id=gateway_key_id or "default",
+        client_ip=request.client.host if request.client else None,
+        method=request.method,
+        path=request.url.path,
+        protocol="anthropic-messages",
+        mode="stream" if wants_stream else "complete",
+        model_id=model_id or "",
+        upstream_model=None,
+    )
+    await repo.add_payload(request_id=request_id, kind="request_incoming", body_bytes=raw_body)
+    adapter = AnthropicMessagesAdapter()
+    proxy = request.app.state.proxy
+    if wants_stream:
+        return await proxy.stream(payload, request_id, model_id=model_id, adapter=adapter)
+    return await proxy.complete(payload, request_id, model_id=model_id, adapter=adapter)
+
+
+@router.post("/responses")
+async def responses(request: Request) -> Response:
+    gateway_key_id = await require_gateway_key(request)
+    raw_body = await request.body()
+    try:
+        payload = json.loads(raw_body)
+    except Exception as exc:
+        raise invalid_request("Invalid JSON") from exc
+    repo = _get_repository(request)
+    request_id = request.state.request_id
+    model_id = payload.get("model") if isinstance(payload, dict) else None
+    wants_stream = isinstance(payload, dict) and payload.get("stream") is True
+    await repo.create_request(
+        request_id=request_id,
+        gateway_key_id=gateway_key_id or "default",
+        client_ip=request.client.host if request.client else None,
+        method=request.method,
+        path=request.url.path,
+        protocol="responses",
+        mode="stream" if wants_stream else "complete",
+        model_id=model_id or "",
+        upstream_model=None,
+    )
+    await repo.add_payload(request_id=request_id, kind="request_incoming", body_bytes=raw_body)
+    adapter = ResponsesAdapter()
+    proxy = request.app.state.proxy
+    if wants_stream:
+        return await proxy.stream(payload, request_id, model_id=model_id, adapter=adapter)
+    return await proxy.complete(payload, request_id, model_id=model_id, adapter=adapter)
 
 
 @router.get("/models")
