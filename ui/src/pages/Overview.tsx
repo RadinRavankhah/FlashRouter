@@ -9,22 +9,13 @@ import {
   Sparkline,
   Spinner,
   StatCard,
+  StatusBadge,
   formatCost,
   formatMs,
   formatNumber,
   formatRelative,
 } from "../components";
 import type { Stats } from "../types";
-
-function StatusBadge({ status }: { status: string }) {
-  const tone =
-    status === "success"
-      ? "success"
-      : status === "error" || status === "interrupted"
-        ? "danger"
-        : "muted";
-  return <span className={`badge badge-${tone}`}>{status}</span>;
-}
 
 export default function Overview() {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -46,6 +37,9 @@ export default function Overview() {
     ? Math.round(((stats.totals.success || 0) / totalRequests) * 100)
     : 0;
   const todayTokens = (stats.today.input_tokens || 0) + (stats.today.output_tokens || 0);
+  const cacheHitRate = stats.today.input_tokens
+    ? Math.round(((stats.today.cache_read_tokens || 0) / stats.today.input_tokens) * 100)
+    : 0;
 
   if (stats.counts.providers === 0) {
     return (
@@ -84,6 +78,11 @@ export default function Overview() {
           hint={`${formatNumber(totalRequests)} total requests`}
         />
         <StatCard label="Tokens today" value={formatNumber(todayTokens)} hint="input + output" />
+        <StatCard
+          label="Cache reads today"
+          value={formatNumber(stats.today.cache_read_tokens)}
+          hint={stats.today.input_tokens ? `${cacheHitRate}% of input` : "prompt caching"}
+        />
         <StatCard label="Est. cost today" value={formatCost(stats.today.cost)} hint="savings tracker" />
         <StatCard label="Providers" value={String(stats.counts.providers)} hint={`${stats.counts.accounts} accounts`} />
         <StatCard label="Combos" value={String(stats.counts.combos)} hint={`${stats.counts.keys} API keys`} />
@@ -117,7 +116,8 @@ export default function Overview() {
                 <div key={row.provider} className="row-between">
                   <span>{row.provider}</span>
                   <span className="muted">
-                    {formatNumber(row.requests)} · {formatCost(row.cost)}
+                    {formatNumber(row.requests)} · {formatNumber(row.cache_read_tokens)} cached ·{" "}
+                    {formatCost(row.cost)}
                   </span>
                 </div>
               ))}
@@ -145,6 +145,7 @@ export default function Overview() {
                   <th>Routed to</th>
                   <th>Status</th>
                   <th>Tokens</th>
+                  <th>Cached</th>
                   <th>Cost</th>
                   <th>Latency</th>
                 </tr>
@@ -163,6 +164,7 @@ export default function Overview() {
                     <td>
                       {formatNumber((row.input_tokens || 0) + (row.output_tokens || 0))}
                     </td>
+                    <td className="muted">{formatNumber(row.cache_read_tokens)}</td>
                     <td>{formatCost(row.cost)}</td>
                     <td>{formatMs(row.duration_ms)}</td>
                   </tr>

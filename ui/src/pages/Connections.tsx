@@ -435,6 +435,9 @@ export default function Connections() {
                           <span className="account-meta">
                             {account.secret_masked || "no key"} · {formatNumber(account.requests)} req ·{" "}
                             {formatNumber(account.input_tokens + account.output_tokens)} tok
+                            {account.cache_read_tokens
+                              ? ` · ${formatNumber(account.cache_read_tokens)} cached`
+                              : ""}
                           </span>
                         </div>
                         <div className="row">

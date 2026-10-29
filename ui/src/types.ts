@@ -34,6 +34,7 @@ export interface Account {
   requests: number;
   input_tokens: number;
   output_tokens: number;
+  cache_read_tokens: number;
 }
 
 export interface ComboTarget {
@@ -71,6 +72,7 @@ export interface ModelEntry {
   display_name: string | null;
   price_in: number;
   price_out: number;
+  price_cache_in: number | null;
   enabled: boolean;
   source: string;
 }
@@ -85,6 +87,8 @@ export interface RequestSummary {
   http_status: number | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
   cost: number | null;
   duration_ms: number | null;
   stream: number;
@@ -107,6 +111,8 @@ export interface Attempt {
   retry_reason: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
   cost: number | null;
 }
 
@@ -133,29 +139,36 @@ export interface Stats {
   totals: {
     requests: number;
     success: number;
-    errors: number;
     input_tokens: number;
     output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
     cost: number;
-    avg_duration_ms: number | null;
-    avg_ttft_ms: number | null;
   };
   today: {
     requests: number;
     cost: number;
     input_tokens: number;
     output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
   };
   timeseries: {
     day: string;
     requests: number;
     input_tokens: number;
     output_tokens: number;
+    cache_read_tokens: number;
     cost: number;
-    errors: number;
   }[];
-  by_provider: { provider: string; requests: number; input_tokens: number; output_tokens: number; cost: number }[];
-  by_model: { model: string; requests: number; input_tokens: number; output_tokens: number; cost: number }[];
+  by_provider: {
+    provider: string;
+    requests: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cost: number;
+  }[];
   recent: RequestSummary[];
   counts: { providers: number; accounts: number; combos: number; keys: number };
 }

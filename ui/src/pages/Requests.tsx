@@ -8,6 +8,7 @@ import {
   EmptyState,
   PageHeader,
   Spinner,
+  StatusBadge,
   formatCost,
   formatMs,
   formatNumber,
@@ -15,16 +16,6 @@ import {
   useToast,
 } from "../components";
 import type { RequestSummary } from "../types";
-
-export function StatusBadge({ status }: { status: string }) {
-  const tone =
-    status === "success"
-      ? "success"
-      : status === "error" || status === "interrupted"
-        ? "danger"
-        : "muted";
-  return <span className={`badge badge-${tone}`}>{status}</span>;
-}
 
 const PAGE_SIZE = 50;
 
@@ -126,6 +117,7 @@ export default function Requests() {
                     <th>Status</th>
                     <th>Attempts</th>
                     <th>Tokens</th>
+                    <th>Cached</th>
                     <th>Cost</th>
                     <th>Latency</th>
                   </tr>
@@ -149,6 +141,7 @@ export default function Requests() {
                       </td>
                       <td>{row.attempts || 1}</td>
                       <td>{formatNumber((row.input_tokens || 0) + (row.output_tokens || 0))}</td>
+                      <td className="muted">{formatNumber(row.cache_read_tokens)}</td>
                       <td>{formatCost(row.cost)}</td>
                       <td>{formatMs(row.duration_ms)}</td>
                     </tr>

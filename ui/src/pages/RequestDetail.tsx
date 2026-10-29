@@ -100,8 +100,18 @@ export default function RequestDetail() {
           <dd>{record.attempts.length}</dd>
           <dt>Tokens</dt>
           <dd>
-            {formatNumber(record.input_tokens)} in / {formatNumber(record.output_tokens)} out
+            {formatNumber(record.input_tokens)} in
+            {record.cache_read_tokens
+              ? ` (${formatNumber(record.cache_read_tokens)} cached)`
+              : ""}{" "}
+            / {formatNumber(record.output_tokens)} out
           </dd>
+          {record.cache_write_tokens ? (
+            <>
+              <dt>Cache writes</dt>
+              <dd>{formatNumber(record.cache_write_tokens)} tokens</dd>
+            </>
+          ) : null}
           <dt>Cost</dt>
           <dd>{formatCost(record.cost)}</dd>
           <dt>Latency</dt>
@@ -138,7 +148,8 @@ export default function RequestDetail() {
               </div>
               <div className="muted" style={{ fontSize: 12 }}>
                 account {attempt.account_name ?? "—"} · HTTP {attempt.http_status ?? "—"} ·{" "}
-                {formatNumber((attempt.input_tokens || 0) + (attempt.output_tokens || 0))} tok ·{" "}
+                {formatNumber((attempt.input_tokens || 0) + (attempt.output_tokens || 0))} tok
+                {attempt.cache_read_tokens ? ` (${formatNumber(attempt.cache_read_tokens)} cached)` : ""} ·{" "}
                 {formatCost(attempt.cost)}
               </div>
               {attempt.error_message && (

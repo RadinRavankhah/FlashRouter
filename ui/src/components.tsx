@@ -157,6 +157,16 @@ export function Badge({ children, tone = "muted" }: { children: ReactNode; tone?
   return <span className={`badge badge-${tone}`}>{children}</span>;
 }
 
+export function StatusBadge({ status }: { status: string }) {
+  const tone =
+    status === "success"
+      ? "success"
+      : status === "error" || status === "interrupted"
+        ? "danger"
+        : "muted";
+  return <Badge tone={tone}>{status}</Badge>;
+}
+
 export function Field({
   label,
   hint,

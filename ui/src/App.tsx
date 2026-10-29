@@ -3,6 +3,7 @@ import { NavLink, Route, Routes } from "react-router-dom";
 import {
   Activity,
   Cable,
+  Coins,
   KeyRound,
   ScrollText,
   Settings as SettingsIcon,
@@ -14,6 +15,7 @@ import type { Health } from "./types";
 import Overview from "./pages/Overview";
 import Connections from "./pages/Connections";
 import Combos from "./pages/Combos";
+import Models from "./pages/Models";
 import Keys from "./pages/Keys";
 import Requests from "./pages/Requests";
 import RequestDetail from "./pages/RequestDetail";
@@ -23,6 +25,7 @@ const NAV = [
   { to: "/", label: "Overview", icon: Activity, end: true },
   { to: "/connections", label: "Connections", icon: Cable },
   { to: "/combos", label: "Combos", icon: Waypoints },
+  { to: "/models", label: "Models", icon: Coins },
   { to: "/keys", label: "API keys", icon: KeyRound },
   { to: "/requests", label: "Requests", icon: ScrollText },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
@@ -76,6 +79,7 @@ export default function App() {
             <Route path="/" element={<Overview />} />
             <Route path="/connections" element={<Connections />} />
             <Route path="/combos" element={<Combos />} />
+            <Route path="/models" element={<Models />} />
             <Route path="/keys" element={<Keys />} />
             <Route path="/requests" element={<Requests />} />
             <Route path="/requests/:id" element={<RequestDetail />} />
