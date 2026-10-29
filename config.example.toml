@@ -1,30 +1,23 @@
-# Copy this file to %LOCALAPPDATA%\FlashRouter\config.toml and fill in the keys.
-# Never commit config.toml or any file containing real secrets.
+# FlashRouter configuration is optional.
+#
+# Everything you normally need (providers, accounts, combos, API keys) is
+# configured from the dashboard and stored in SQLite. Copy this file to
+# config.toml only if you want to change the bind address or defaults.
 
 [server]
 host = "127.0.0.1"
-port = 8787
+port = 20128
+log_level = "info"
 
 [gateway]
-# The key clients must send as: Authorization: Bearer <api_key>
-api_key = "replace-with-a-long-random-gateway-key"
+# Compress large tool outputs before sending them upstream.
+token_saver = true
+# Extra retries per upstream target on transient failures.
+max_retries = 2
+connect_timeout = 10.0
+request_timeout = 300.0
 
-[upstream]
-name = "openrouter"
-base_url = "https://openrouter.ai/api/v1"
-protocol = "openai-chat"
-api_key = "replace-with-upstream-key"
-connect_timeout_seconds = 10
-read_timeout_seconds = 180
-verify_tls = true
-# Leave false unless requests must use HTTP_PROXY/HTTPS_PROXY from the environment.
-trust_env = false
-follow_redirects = false
-
-[upstream.headers]
-HTTP-Referer = "https://example.invalid/flashrouter"
-X-OpenRouter-Title = "FlashRouter"
-
-# Client-facing model aliases and upstream models are managed entirely from the
-# dashboard (Providers / Credentials / Models & aliases). [[models]] entries in
-# TOML are still read for backward compatibility but are no longer required.
+[admin]
+# Optional: require this token in the X-Admin-Token header for /admin/api.
+# Leave empty for a localhost-only dashboard.
+token = ""
