@@ -2,6 +2,23 @@
 
 FlashRouter is a lightweight, local-first gateway for OpenAI-compatible APIs. It is intended to become a practical replacement for a local 9router setup without Docker, a production Node process, or a large provider catalog.
 
+## Quick use
+
+```bash
+pip install -e .
+python -m flashrouter run
+# Or via CLI
+python -m flashrouter cli run
+```
+
+Dashboard: `http://localhost:8000/admin`  
+Proxy endpoints: `/v1/chat/completions`, `/v1/messages` (v0.8), `/v1/responses` (v0.7)  
+Config: copy `config.example.toml` to `config.toml`.
+
+## Status
+
+v0.3 complete; v0.4 analytics backend; v0.5 budgets; v0.6 routing; v0.7/v0.8 adapters wired; v0.9 CLI/local operation. Not fully complete — v1.0 compatibility/recovery/performance docs remain.
+
 This repository is at **v0.3** (completed): dashboard configuration, upstream/key/model management, full request history. **v0.7** (Responses/Codex) and **v0.8** (Anthropic/Claude Code) adapters wired with endpoints and tests. **v0.4** analytics backend completed (DB v4, paginated APIs, reconciliation, CSV/projections, usage accountant, tests). **v0.5** budgets/restrictions: schema v5, enforcement service, basic tests. **Remaining:** concurrent reservation logic, alerts, traffic controls, v0.6 routing, v0.9 packaging, v1.0 stable.
 and a dashboard for upstreams, credentials, client keys, and models.
 
