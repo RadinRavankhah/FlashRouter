@@ -291,23 +291,25 @@ export const api: GatewayApi = {
     );
     const total = stats.total ?? 0;
     const success = stats.success ?? 0;
+    const recentRows = await json<{ requests: any[] }>("/admin/v1/requests?limit=10&offset=0");
+    const recent = (recentRows.requests ?? []).map(mapRequest);
     return {
-      spendToday: 0,
-      spendMonth: 0,
-      inputTokens: 0,
-      outputTokens: 0,
+      spendToday: null,
+      spendMonth: null,
+      inputTokens: null,
+      outputTokens: null,
       cacheReadFraction: null,
       successRate: total > 0 ? success / total : 0,
       active: 0,
-      budgetRemaining: 0,
+      budgetRemaining: null,
       daily: [],
       modelShare: [],
-      recent: [],
+      recent,
     };
   },
 
-  async requests(): Promise<LogRequest[]> {
-    const data = await json<{ requests: any[] }>("/admin/v1/requests?limit=100&offset=0");
+  async requests(limit = 100, offset = 0): Promise<LogRequest[]> {
+    const data = await json<{ requests: any[] }>(`/admin/v1/requests?limit=${limit}&offset=${offset}`);
     const rows: any[] = data.requests ?? [];
     return rows.map(mapRequest);
   },
@@ -315,25 +317,25 @@ export const api: GatewayApi = {
   async request(id: string): Promise<LogRequest | undefined> {
     const res = await fetch(`/admin/v1/requests/${id}`);
     if (res.status === 404) return undefined;
-    const data = await json<{ request: any }>(res as any);
+    const data = await json<{ request: any; attempts: any[]; payloads: any[] }>(res as any);
     const row = data.request;
     if (!row) return undefined;
-    return mapRequest(row);
+    return mapRequest({ ...row, attempts: data.attempts ?? [], payloads: data.payloads ?? [] });
   },
 
   async settings(): Promise<Settings> {
     const health = await json<any>("/admin/v1/health");
     return {
-      dataDir: "",
-      dbSizeMb: health.db_size_mb ?? 0,
-      bodySizeMb: 0,
-      diskTotalGb: health.disk_total_gb ?? 0,
-      diskFreeGb: health.disk_free_gb ?? 0,
+      dataDir: null,
+      dbSizeMb: health.db_size_mb ?? null,
+      bodySizeMb: null,
+      diskTotalGb: health.disk_total_gb ?? null,
+      diskFreeGb: health.disk_free_gb ?? null,
       encryption: "off",
       bindAddress: "127.0.0.1",
       port: 8787,
       loggingHealthy: health.logging_healthy ?? false,
-      lastBackup: new Date().toISOString(),
+      lastBackup: null,
     };
   },
 };

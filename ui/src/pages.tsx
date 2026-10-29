@@ -295,6 +295,8 @@ export function CredentialsPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [form, setForm] = useState<any>({});
+  const [revealedId, setRevealedId] = useState<string | null>(null);
+  const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
 
   const credentials: any[] = data?.credentials ?? [];
 
@@ -308,9 +310,28 @@ export function CredentialsPage() {
   };
 
   const openEdit = (c: any) => {
-    setForm({ ...c, name: c.name, secret: c.secret, enabled: c.enabled === 1 || c.enabled === true });
+    setForm({ name: c.name, secret: c.secret, enabled: c.enabled === 1 || c.enabled === true });
     setEditing(c);
     setOpen(true);
+  };
+
+  const reveal = async (id: string) => {
+    try {
+      const row = await api.getCredential(id);
+      setRevealedSecret(row.secret ?? "");
+      setRevealedId(id);
+    } catch (err: any) {
+      setError(err.message || "Failed to reveal secret");
+    }
+  };
+
+  const copyRevealed = () => {
+    if (revealedSecret) copy(revealedSecret);
+  };
+
+  const hide = () => {
+    setRevealedId(null);
+    setRevealedSecret(null);
   };
 
   const save = async () => {
@@ -355,19 +376,20 @@ export function CredentialsPage() {
                 <td>{c.provider_id}</td>
                   <td>
                     <div className="secret-row">
-                      {form?.id === c.id ? (
+                      {revealedId === c.id ? (
                         <>
-                          <span className="mono small">{c.secret}</span>
+                          <span className="mono small">{revealedSecret ?? ""}</span>
                           <button
                             className="ghost reveal-btn"
-                            onClick={() => copy(c.secret ?? "")}
+                            onClick={copyRevealed}
                             title="Copy"
+                            disabled={!revealedSecret}
                           >
                             Copy
                           </button>
                           <button
                             className="ghost reveal-btn"
-                            onClick={() => setForm({ ...form, id: null })}
+                            onClick={hide}
                             title="Hide"
                           >
                             Hide
@@ -378,7 +400,8 @@ export function CredentialsPage() {
                           <span className="mono small">{mask(c.secret ?? "")}</span>
                           <button
                             className="ghost reveal-btn"
-                            onClick={() => setForm({ ...form, id: c.id, secret: c.secret })}
+                            onClick={() => reveal(c.id)}
+                            title="Reveal"
                           >
                             Reveal
                           </button>
@@ -432,6 +455,8 @@ export function KeysPage() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [form, setForm] = useState<any>({});
+  const [revealedId, setRevealedId] = useState<string | null>(null);
+  const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
 
   const keys: GatewayKey[] = data?.keys ?? [];
 
@@ -445,9 +470,28 @@ export function KeysPage() {
   };
 
   const openEdit = (k: any) => {
-    setForm({ ...k, secret: k.secret, enabled: k.enabled === 1 || k.enabled === true });
+    setForm({ name: k.name, secret: k.secret, enabled: k.enabled === 1 || k.enabled === true });
     setEditing(k);
     setOpen(true);
+  };
+
+  const reveal = async (id: string) => {
+    try {
+      const row = await api.getKey(id);
+      setRevealedSecret(row.secret ?? "");
+      setRevealedId(id);
+    } catch (err: any) {
+      setError(err.message || "Failed to reveal secret");
+    }
+  };
+
+  const copyRevealed = () => {
+    if (revealedSecret) copy(revealedSecret);
+  };
+
+  const hide = () => {
+    setRevealedId(null);
+    setRevealedSecret(null);
   };
 
   const save = async () => {
@@ -485,19 +529,20 @@ export function KeysPage() {
                 <td>{k.name}</td>
                   <td>
                     <div className="secret-row">
-                      {form?.id === k.id ? (
+                      {revealedId === k.id ? (
                         <>
-                          <span className="mono small">{k.secret}</span>
+                          <span className="mono small">{revealedSecret ?? ""}</span>
                           <button
                             className="ghost reveal-btn"
-                            onClick={() => copy(k.secret)}
+                            onClick={copyRevealed}
                             title="Copy"
+                            disabled={!revealedSecret}
                           >
                             Copy
                           </button>
                           <button
                             className="ghost reveal-btn"
-                            onClick={() => setForm({ ...form, id: null })}
+                            onClick={hide}
                             title="Hide"
                           >
                             Hide
@@ -508,7 +553,8 @@ export function KeysPage() {
                           <span className="mono small">{mask(k.secret)}</span>
                           <button
                             className="ghost reveal-btn"
-                            onClick={() => setForm({ ...form, id: k.id, secret: k.secret })}
+                            onClick={() => reveal(k.id)}
+                            title="Reveal"
                           >
                             Reveal
                           </button>
@@ -812,17 +858,41 @@ function RequestDetail({ req, onClose }: { req: LogRequest; onClose: () => void 
 }
 
 export function RequestsPage() {
-  const { data, reload } = useAsync(() => api.requests(), []);
+  const [limit, setLimit] = useState(100);
+  const [offset, setOffset] = useState(0);
+  const { data, reload } = useAsync(() => api.requests(limit, offset), [limit, offset]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<"all" | RequestStatus>("all");
   const [selected, setSelected] = useState<string | null>(null);
+  const [detail, setDetail] = useState<LogRequest | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const rows = (data ?? []).filter(
     (r) =>
       (status === "all" || r.status === status) &&
       (!query || JSON.stringify(r).toLowerCase().includes(query.toLowerCase()))
   );
-  const detail = data?.find((r) => r.id === selected) ?? null;
+
+  const openDetail = async (id: string) => {
+    setSelected(id);
+    setDetail(null);
+    setDetailLoading(true);
+    try {
+      const row = await api.request(id);
+      if (row) setDetail(row);
+    } catch {
+      // leave detail null; error shown inline below
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const closeDetail = () => {
+    setSelected(null);
+    setDetail(null);
+  };
+
+  const hasMore = data ? data.length === limit : false;
 
   return (
     <>
@@ -834,13 +904,34 @@ export function RequestsPage() {
             <button key={s} className={status === s ? "active" : ""} onClick={() => setStatus(s)}>{s}</button>
           ))}
         </div>
-        <button className="ghost" onClick={reload}>↻</button>
+        <button className="ghost" onClick={() => reload()}>↻</button>
       </div>
       <div className={`split ${detail ? "has-detail" : ""}`}>
         <Card className="table-card">
-          {!data ? <Skeleton /> : <RequestTable rows={rows} selectedId={selected} onSelect={setSelected} />}
+          {!data ? <Skeleton /> : <RequestTable rows={rows} selectedId={selected} onSelect={openDetail} />}
+          <div className="card-foot">
+            <button
+              className="ghost"
+              onClick={() => setOffset((o) => Math.max(0, o - limit))}
+              disabled={offset === 0 || !data}
+            >
+              ← Prev
+            </button>
+            <button
+              className="ghost"
+              onClick={() => setOffset((o) => o + limit)}
+              disabled={!hasMore}
+            >
+              Next →
+            </button>
+          </div>
         </Card>
-        {detail && <RequestDetail req={detail} onClose={() => setSelected(null)} />}
+        {detailLoading && selected && !detail && (
+          <div className="detail" style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200 }}>
+            <Skeleton />
+          </div>
+        )}
+        {detail && <RequestDetail req={detail} onClose={closeDetail} />}
       </div>
     </>
   );
@@ -855,26 +946,27 @@ export function SettingsPage() {
 
   if (!data) return <><PageHeader title="Settings" subtitle="Loading…" /><Skeleton /></>;
 
-  const used = data.diskTotalGb - data.diskFreeGb;
+  const used =
+    data.diskTotalGb !== null && data.diskFreeGb !== null ? data.diskTotalGb - data.diskFreeGb : 0;
 
   return (
     <>
       <PageHeader title="Settings" subtitle="Storage, security, and logging" />
       <div className="grid two">
         <Card title="Storage">
-          <Field label="Data directory"><code className="mono small">{data.dataDir}</code></Field>
-          <Field label="Database"><span>{data.dbSizeMb.toFixed(1)} MB</span></Field>
-          <Field label="Request bodies"><span>{data.bodySizeMb.toFixed(1)} MB</span></Field>
+          <Field label="Data directory"><code className="mono small">{data.dataDir ?? "—"}</code></Field>
+          <Field label="Database"><span>{data.dbSizeMb === null ? "—" : `${data.dbSizeMb.toFixed(1)} MB`}</span></Field>
+          <Field label="Request bodies"><span>{data.bodySizeMb === null ? "—" : `${data.bodySizeMb.toFixed(1)} MB`}</span></Field>
           <Field label="Disk">
             <div className="disk">
-              <ProgressBar value={used} max={data.diskTotalGb} tone={data.diskFreeGb < 20 ? "danger" : undefined} />
-              <span className="small muted">{data.diskFreeGb.toFixed(1)} GB free</span>
+              <ProgressBar value={used} max={data.diskTotalGb ?? 0} tone={data.diskFreeGb !== null && data.diskFreeGb < 20 ? "danger" : undefined} />
+              <span className="small muted">{data.diskFreeGb === null ? "—" : `${data.diskFreeGb.toFixed(1)} GB free`}</span>
             </div>
           </Field>
         </Card>
         <Card title="Logging">
           <Field label="Write path"><Badge tone={data.loggingHealthy ? "success" : "danger"}>{data.loggingHealthy ? "healthy" : "failing"}</Badge></Field>
-          <Field label="Last backup"><span className="small">{fmtTime(data.lastBackup)}</span></Field>
+          <Field label="Last backup"><span className="small">{data.lastBackup ? fmtTime(data.lastBackup) : "—"}</span></Field>
           <Field label="Retention"><span className="small">Forever</span></Field>
         </Card>
       </div>

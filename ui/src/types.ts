@@ -106,28 +106,28 @@ export interface Route {
 }
 
 export interface Overview {
-  spendToday: number;
-  spendMonth: number;
-  inputTokens: number;
-  outputTokens: number;
+  spendToday: number | null;
+  spendMonth: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
   cacheReadFraction: number | null;
   successRate: number;
   active: number;
-  budgetRemaining: number;
+  budgetRemaining: number | null;
   daily: { label: string; value: number }[];
   modelShare: { model: string; cost: number }[];
   recent: LogRequest[];
 }
 
 export interface Settings {
-  dataDir: string;
-  dbSizeMb: number;
-  bodySizeMb: number;
-  diskTotalGb: number;
-  diskFreeGb: number;
+  dataDir: string | null;
+  dbSizeMb: number | null;
+  bodySizeMb: number | null;
+  diskTotalGb: number | null;
+  diskFreeGb: number | null;
   encryption: "off" | "locked" | "unlocked";
   bindAddress: string;
   port: number;
   loggingHealthy: boolean;
-  lastBackup: string;
+  lastBackup: string | null;
 }
