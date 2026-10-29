@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from flashrouter import __version__
 from flashrouter.errors import bad_request
 from flashrouter.providers.presets import PRESETS, get_preset
+from flashrouter.providers.pricing import extract_model_pricing
 from flashrouter.transport.headers import build_upstream_headers
 from flashrouter.transport.urls import join_url
 
@@ -156,22 +157,38 @@ async def _probe_models(request: Request, provider: dict[str, Any], secret: str 
     try:
         response = await client.get(url, headers=headers)
     except Exception as exc:  # noqa: BLE001 - report any transport failure
-        return {"ok": False, "url": url, "status": 0, "error": str(exc), "models": []}
-    models: list[str] = []
+        return {
+            "ok": False,
+            "url": url,
+            "status": 0,
+            "error": str(exc),
+            "models": [],
+            "items": [],
+        }
+    items: list[dict[str, Any]] = []
     if response.status_code < 400:
         try:
             payload = response.json()
             for item in payload.get("data", []):
                 if isinstance(item, dict) and item.get("id"):
-                    models.append(str(item["id"]))
+                    pricing = extract_model_pricing(item)
+                    items.append(
+                        {
+                            "id": str(item["id"]),
+                            "price_in": pricing.price_in,
+                            "price_out": pricing.price_out,
+                            "price_cache_in": pricing.price_cache_in,
+                        }
+                    )
         except Exception:  # noqa: BLE001
-            models = []
+            items = []
     return {
         "ok": response.status_code < 400,
         "url": url,
         "status": response.status_code,
         "error": None if response.status_code < 400 else response.text[:500],
-        "models": models,
+        "models": [item["id"] for item in items],
+        "items": items,
     }
 
 
@@ -292,9 +309,19 @@ async def discover_models(request: Request, provider_id: int) -> dict[str, Any]:
     probe = await _probe_models(request, provider, secret)
     if not probe["ok"]:
         return probe
-    for model in probe["models"]:
-        await repo.ensure_model(provider_id=provider_id, model=model)
+    priced = 0
+    for model in probe["items"]:
+        await repo.ensure_model(
+            provider_id=provider_id,
+            model=model["id"],
+            price_in=model["price_in"],
+            price_out=model["price_out"],
+            price_cache_in=model["price_cache_in"],
+        )
+        if model["price_in"] is not None and model["price_out"] is not None:
+            priced += 1
     probe["imported"] = len(probe["models"])
+    probe["priced"] = priced
     return probe
 
 

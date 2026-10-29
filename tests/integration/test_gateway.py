@@ -123,6 +123,74 @@ def test_cache_tokens_recorded_and_discounted(settings: Path):
         assert client.get("/admin/api/models").json()[0]["price_cache_in"] == 0.1
 
 
+def test_discover_imports_prices_and_preserves_manual_edits(settings: Path):
+    prices = {
+        "openai/gpt-4o": {
+            "prompt": "0.0000025",
+            "completion": "0.00001",
+            "input_cache_read": "0.00000125",
+        },
+        "free/model": {"prompt": "0", "completion": "0"},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"id": model, "pricing": pricing}
+                        for model, pricing in prices.items()
+                    ]
+                },
+            )
+        return httpx.Response(200, json=chat_completion())
+
+    client, upstream = build_client(settings, handler)
+    with client:
+        provider = client.post(
+            "/admin/api/providers",
+            json={"name": "mock", "base_url": "https://mock.test/v1"},
+        ).json()
+        client.post(
+            f"/admin/api/providers/{provider['id']}/accounts",
+            json={"name": "acct", "secret": "sk-test"},
+        )
+        discover_url = f"/admin/api/providers/{provider['id']}/discover"
+
+        result = client.post(discover_url).json()
+        assert result["imported"] == 2
+        assert result["priced"] == 2
+
+        models = {item["model"]: item for item in client.get("/admin/api/models").json()}
+        gpt = models["openai/gpt-4o"]
+        assert gpt["price_in"] == pytest.approx(2.5)
+        assert gpt["price_out"] == pytest.approx(10.0)
+        assert gpt["price_cache_in"] == pytest.approx(1.25)
+
+        client.put(
+            f"/admin/api/models/{gpt['id']}",
+            json={"price_in": 1.0, "price_out": 2.0, "price_cache_in": None},
+        )
+        prices["openai/gpt-4o"] = {"prompt": "0.00001", "completion": "0.00002"}
+        client.post(discover_url)
+        gpt = {
+            item["model"]: item for item in client.get("/admin/api/models").json()
+        }["openai/gpt-4o"]
+        assert gpt["price_in"] == pytest.approx(1.0)
+        assert gpt["price_out"] == pytest.approx(2.0)
+
+        free = models["free/model"]
+        assert free["price_in"] == pytest.approx(0.0)
+        prices["free/model"] = {"prompt": "0.000003", "completion": "0.000004"}
+        client.post(discover_url)
+        free = {
+            item["model"]: item for item in client.get("/admin/api/models").json()
+        }["free/model"]
+        assert free["price_in"] == pytest.approx(3.0)
+        assert free["price_out"] == pytest.approx(4.0)
+
+
 def test_fallback_on_rate_limit(settings: Path):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "first.test":

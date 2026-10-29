@@ -306,17 +306,44 @@ class Repository:
         )
 
     async def ensure_model(
-        self, *, provider_id: int, model: str, source: str = "discover"
+        self,
+        *,
+        provider_id: int,
+        model: str,
+        source: str = "discover",
+        price_in: float | None = None,
+        price_out: float | None = None,
+        price_cache_in: float | None = None,
     ) -> int:
-        """Insert a discovered model without overwriting existing pricing."""
+        """Insert a discovered model and backfill prices only when they are unset."""
         existing = await self._fetchone(
-            "SELECT id FROM models WHERE provider_id=? AND model=?", (provider_id, model)
+            "SELECT id, price_in, price_out FROM models WHERE provider_id=? AND model=?",
+            (provider_id, model),
         )
         if existing:
+            if (
+                price_in is not None
+                and price_out is not None
+                and float(existing["price_in"]) == 0
+                and float(existing["price_out"]) == 0
+            ):
+                await self._write(
+                    "UPDATE models SET price_in=?, price_out=?, price_cache_in=? WHERE id=?",
+                    (price_in, price_out, price_cache_in, existing["id"]),
+                )
             return int(existing["id"])
         return await self._write(
-            "INSERT INTO models(provider_id, model, source, created_at) VALUES (?,?,?,?)",
-            (provider_id, model, source, now_iso()),
+            "INSERT INTO models(provider_id, model, price_in, price_out, price_cache_in, "
+            "source, created_at) VALUES (?,?,?,?,?,?,?)",
+            (
+                provider_id,
+                model,
+                price_in or 0,
+                price_out or 0,
+                price_cache_in,
+                source,
+                now_iso(),
+            ),
         )
 
     async def update_model_pricing(
