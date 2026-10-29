@@ -1,3 +1,3 @@
-"""FlashRouter: a lightweight local OpenAI-compatible gateway."""
+"""FlashRouter: a local-first, OpenAI-compatible LLM router."""
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
