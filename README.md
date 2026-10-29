@@ -2,7 +2,7 @@
 
 FlashRouter is a lightweight, local-first gateway for OpenAI-compatible APIs. It is intended to become a practical replacement for a local 9router setup without Docker, a production Node process, or a large provider catalog.
 
-This repository is at **v0.3**: a manageable local gateway with full request history
+This repository is at **v0.3** (completed): dashboard configuration, upstream/key/model management, full request history. In-progress: v0.4 analytics (DB v4 migrations + adapter tests), v0.8 Anthropic translation adapter, v0.7 Codex/Responses adapter.
 and a dashboard for upstreams, credentials, client keys, and models.
 
 ## What works in v0.3
