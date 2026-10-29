@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Coins, Pencil, Plus, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, Coins, Pencil, Plus, Trash2 } from "lucide-react";
 import { api, ApiError } from "../api";
 import {
   Button,
@@ -9,6 +9,7 @@ import {
   Modal,
   PageHeader,
   Spinner,
+  formatNumber,
   useToast,
 } from "../components";
 import type { ModelEntry, Provider } from "../types";
@@ -47,6 +48,8 @@ function optionalNumber(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+const PAGE_SIZE = 25;
+
 export default function Models() {
   const toast = useToast();
   const [models, setModels] = useState<ModelEntry[]>([]);
@@ -55,6 +58,9 @@ export default function Models() {
   const [editing, setEditing] = useState<ModelEntry | null>(null);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<ModelForm>(EMPTY_FORM);
+  const [query, setQuery] = useState("");
+  const [providerFilter, setProviderFilter] = useState("");
+  const [offset, setOffset] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -74,6 +80,38 @@ export default function Models() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return models.filter((model) => {
+      if (providerFilter && String(model.provider_id) !== providerFilter) return false;
+      if (!needle) return true;
+      return (
+        model.model.toLowerCase().includes(needle) ||
+        (model.display_name ?? "").toLowerCase().includes(needle) ||
+        model.provider_name.toLowerCase().includes(needle)
+      );
+    });
+  }, [models, providerFilter, query]);
+
+  useEffect(() => {
+    setOffset(0);
+  }, [query, providerFilter]);
+
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const page = Math.min(Math.floor(offset / PAGE_SIZE) + 1, pages);
+  const pageItems = filtered.slice(offset, offset + PAGE_SIZE);
+
+  useEffect(() => {
+    if (offset > 0 && offset >= filtered.length) {
+      setOffset(Math.max(0, (pages - 1) * PAGE_SIZE));
+    }
+  }, [offset, filtered.length, pages]);
+
+  const clearFilters = () => {
+    setQuery("");
+    setProviderFilter("");
+  };
 
   const openCreate = () => {
     setForm({ ...EMPTY_FORM, provider_id: providers[0]?.id ?? 0 });
@@ -156,57 +194,122 @@ export default function Models() {
         }
       />
 
-      <Card>
+      <Card className="section">
+        <div className="row">
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search models…"
+            style={{ maxWidth: 280 }}
+          />
+          <select
+            value={providerFilter}
+            onChange={(event) => setProviderFilter(event.target.value)}
+            style={{ width: 200 }}
+          >
+            <option value="">All providers</option>
+            {providers.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name}
+              </option>
+            ))}
+          </select>
+          {(query || providerFilter) && (
+            <Button variant="ghost" onClick={clearFilters}>
+              Clear
+            </Button>
+          )}
+          <span className="muted">
+            {formatNumber(filtered.length)} of {formatNumber(models.length)} models
+          </span>
+        </div>
+      </Card>
+
+      <div className="section">
         {models.length === 0 ? (
           <EmptyState
             title="No models yet"
             description="Add an account and use Discover in Connections, or add a model manually."
           />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            title="No matching models"
+            description="Try a different search term or provider."
+            action={<Button onClick={clearFilters}>Clear filters</Button>}
+          />
         ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Provider</th>
-                  <th>Model</th>
-                  <th>Input / 1M</th>
-                  <th>Output / 1M</th>
-                  <th>Cached / 1M</th>
-                  <th>Source</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {models.map((model) => (
-                  <tr key={model.id}>
-                    <td>{model.provider_name}</td>
-                    <td>
-                      <span>{model.display_name || model.model}</span>
-                      {model.display_name && <span className="muted"> · {model.model}</span>}
-                    </td>
-                    <td>{price(model.price_in)}</td>
-                    <td>{price(model.price_out)}</td>
-                    <td className={model.price_cache_in === null ? "muted" : ""}>
-                      {price(model.price_cache_in)}
-                    </td>
-                    <td className="muted">{model.source}</td>
-                    <td>
-                      <div className="row" style={{ justifyContent: "flex-end" }}>
-                        <Button variant="ghost" onClick={() => openEdit(model)} title="Edit pricing">
-                          <Pencil size={14} />
-                        </Button>
-                        <Button variant="ghost" onClick={() => remove(model)} title="Remove model">
-                          <Trash2 size={14} />
-                        </Button>
-                      </div>
-                    </td>
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Provider</th>
+                    <th>Model</th>
+                    <th>Input / 1M</th>
+                    <th>Output / 1M</th>
+                    <th>Cached / 1M</th>
+                    <th>Source</th>
+                    <th />
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {pageItems.map((model) => (
+                    <tr key={model.id}>
+                      <td>{model.provider_name}</td>
+                      <td>
+                        <span>{model.display_name || model.model}</span>
+                        {model.display_name && <span className="muted"> · {model.model}</span>}
+                      </td>
+                      <td>{price(model.price_in)}</td>
+                      <td>{price(model.price_out)}</td>
+                      <td className={model.price_cache_in === null ? "muted" : ""}>
+                        {price(model.price_cache_in)}
+                      </td>
+                      <td className="muted">{model.source}</td>
+                      <td>
+                        <div className="row" style={{ justifyContent: "flex-end" }}>
+                          <Button
+                            variant="ghost"
+                            onClick={() => openEdit(model)}
+                            title="Edit pricing"
+                          >
+                            <Pencil size={14} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            onClick={() => remove(model)}
+                            title="Remove model"
+                          >
+                            <Trash2 size={14} />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="row-between" style={{ marginTop: 14 }}>
+              <span className="muted">
+                Page {page} of {pages} · showing {formatNumber(pageItems.length)} of{" "}
+                {formatNumber(filtered.length)}
+              </span>
+              <div className="row">
+                <Button onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))} disabled={offset === 0}>
+                  <ChevronLeft size={15} /> Prev
+                </Button>
+                <Button
+                  onClick={() => setOffset(offset + PAGE_SIZE)}
+                  disabled={offset + PAGE_SIZE >= filtered.length}
+                >
+                  Next <ChevronRight size={15} />
+                </Button>
+              </div>
+            </div>
+          </>
         )}
-      </Card>
+      </div>
 
       {dialogOpen && (
         <Modal
