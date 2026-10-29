@@ -9,7 +9,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 MIGRATIONS = {
     1: """
@@ -155,6 +155,28 @@ MIGRATIONS = {
         created_at TEXT NOT NULL
     );
     INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '4');
+    """,
+    5: """
+    -- v0.5 budgets/restrictions
+    ALTER TABLE gateway_keys ADD COLUMN daily_budget REAL DEFAULT 0;
+    ALTER TABLE gateway_keys ADD COLUMN monthly_budget REAL DEFAULT 0;
+    ALTER TABLE gateway_keys ADD COLUMN lifetime_budget REAL DEFAULT 0;
+    ALTER TABLE gateway_keys ADD COLUMN budget_reset_hour INTEGER DEFAULT 0;
+    ALTER TABLE gateway_keys ADD COLUMN allowed_models TEXT DEFAULT '[]';
+    ALTER TABLE provider_credentials ADD COLUMN daily_budget REAL DEFAULT 0;
+    ALTER TABLE provider_credentials ADD COLUMN allowed_models TEXT DEFAULT '[]';
+    CREATE TABLE IF NOT EXISTS budget_reservations (
+        reservation_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL REFERENCES requests(request_id),
+        gateway_key_id TEXT,
+        credential_id TEXT,
+        reserved_cost REAL NOT NULL DEFAULT 0,
+        settled_cost REAL,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_budget_req ON budget_reservations(request_id);
+    INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '5');
     """,
 }
 
