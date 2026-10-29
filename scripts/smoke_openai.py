@@ -26,7 +26,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--api-key",
-        default=os.getenv("FLASHROUTER_API_KEY") or os.getenv("FLASHROUTER_GATEWAY_API_KEY"),
+        default=os.getenv("FLASHROUTER_API_KEY"),
     )
     parser.add_argument("--model", default=os.getenv("FLASHROUTER_MODEL", "coding-fast"))
     args = parser.parse_args()
