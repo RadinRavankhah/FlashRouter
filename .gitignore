@@ -21,10 +21,7 @@ htmlcov/
 config.toml
 *.local.toml
 .env
-logs/
-data/
 backups/
-diagnostics/
 *.db
 *.db-wal
 *.db-shm
