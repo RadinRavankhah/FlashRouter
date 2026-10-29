@@ -256,11 +256,20 @@ export default function Connections() {
 
   const discover = async (provider: Provider) => {
     try {
-      const result = await api.post<{ ok: boolean; imported?: number; error?: string }>(
-        `/admin/api/providers/${provider.id}/discover`,
-      );
+      const result = await api.post<{
+        ok: boolean;
+        imported?: number;
+        priced?: number;
+        error?: string;
+      }>(`/admin/api/providers/${provider.id}/discover`);
       if (result.ok) {
-        toast(`Imported ${result.imported ?? 0} models from ${provider.name}`);
+        const count = result.imported ?? 0;
+        const priced = result.priced ?? 0;
+        toast(
+          priced > 0
+            ? `Imported ${count} models from ${provider.name} (${priced} with pricing)`
+            : `Imported ${count} models from ${provider.name}`,
+        );
         refresh();
       } else {
         toast(`Discover failed: ${result.error ?? "unknown error"}`, "error");
