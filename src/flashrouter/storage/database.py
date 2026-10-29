@@ -9,7 +9,7 @@ from pathlib import Path
 
 import aiosqlite
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 MIGRATIONS = {
     1: """
@@ -115,6 +115,46 @@ MIGRATIONS = {
     3: """
     ALTER TABLE gateway_keys ADD COLUMN last_used TEXT;
     INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3');
+    """,
+    4: """
+    -- v0.4 analytics: usage, pricing, cost reconciliation
+    CREATE TABLE IF NOT EXISTS usage_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL REFERENCES requests(request_id),
+        attempt_id TEXT REFERENCES attempts(attempt_id),
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cache_read_tokens INTEGER,
+        cache_write_tokens INTEGER,
+        reasoning_tokens INTEGER,
+        raw_usage TEXT,
+        usage_source TEXT,
+        completeness TEXT DEFAULT 'unknown',
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_request_id ON usage_records(request_id);
+    CREATE TABLE IF NOT EXISTS price_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        model_id TEXT NOT NULL,
+        input_price_per_1m REAL,
+        output_price_per_1m REAL,
+        cache_read_price_per_1m REAL,
+        currency TEXT DEFAULT 'USD',
+        version_tag TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_price_model_version ON price_versions(model_id, version_tag);
+    CREATE TABLE IF NOT EXISTS cost_reconciliation (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL REFERENCES requests(request_id),
+        effort_cost REAL,
+        billed_cost REAL,
+        estimated_cost REAL,
+        status TEXT DEFAULT 'pending',
+        adjustment_reason TEXT,
+        created_at TEXT NOT NULL
+    );
+    INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '4');
     """,
 }
 
