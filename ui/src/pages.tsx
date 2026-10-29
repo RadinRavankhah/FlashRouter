@@ -401,9 +401,9 @@ export function CredentialsPage() {
                           <button
                             className="ghost reveal-btn"
                             onClick={() => reveal(c.id)}
-                            title="Reveal"
+                            title="Reveal secret"
                           >
-                            Reveal
+                            {revealedId === c.id ? "Hide" : "Reveal"}
                           </button>
                         </>
                       )}
