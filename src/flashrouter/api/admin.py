@@ -63,6 +63,13 @@ class ModelIn(BaseModel):
     display_name: str | None = None
     price_in: float = 0
     price_out: float = 0
+    price_cache_in: float | None = None
+
+
+class ModelPriceIn(BaseModel):
+    price_in: float = 0
+    price_out: float = 0
+    price_cache_in: float | None = None
 
 
 class SettingsIn(BaseModel):
@@ -115,6 +122,7 @@ def _account_out(account: dict[str, Any]) -> dict[str, Any]:
         "requests": account.get("requests", 0),
         "input_tokens": account.get("input_tokens", 0),
         "output_tokens": account.get("output_tokens", 0),
+        "cache_read_tokens": account.get("cache_read_tokens", 0),
     }
 
 
@@ -168,18 +176,6 @@ async def _probe_models(request: Request, provider: dict[str, Any], secret: str 
 
 
 # ---------------------------------------------------------------------- status
-@router.get("/setup/status")
-async def setup_status(request: Request) -> dict[str, Any]:
-    repo = _repo(request)
-    counts = {
-        "providers": len(await repo.list_providers()),
-        "accounts": len(await repo.list_accounts()),
-        "combos": len(await repo.list_combos()),
-        "keys": await repo.count_keys(),
-    }
-    return {"configured": counts["providers"] > 0 and counts["keys"] > 0, "counts": counts}
-
-
 @router.get("/health")
 async def health(request: Request) -> dict[str, Any]:
     repo = _repo(request)
@@ -244,18 +240,6 @@ async def create_provider(request: Request, payload: ProviderIn) -> dict[str, An
     return _provider_out(provider)
 
 
-@router.get("/providers/{provider_id}")
-async def get_provider(request: Request, provider_id: int) -> dict[str, Any]:
-    repo = _repo(request)
-    provider = await repo.get_provider(provider_id)
-    if provider is None:
-        raise bad_request("Provider not found", param="provider_id")
-    provider["accounts"] = [
-        _account_out(a) for a in await repo.list_accounts(provider_id)
-    ]
-    return _provider_out(provider)
-
-
 @router.put("/providers/{provider_id}")
 async def update_provider(
     request: Request, provider_id: int, payload: ProviderIn
@@ -309,9 +293,7 @@ async def discover_models(request: Request, provider_id: int) -> dict[str, Any]:
     if not probe["ok"]:
         return probe
     for model in probe["models"]:
-        await repo.upsert_model(
-            provider_id=provider_id, model=model, source="discover"
-        )
+        await repo.ensure_model(provider_id=provider_id, model=model)
     probe["imported"] = len(probe["models"])
     return probe
 
@@ -416,14 +398,6 @@ async def create_combo(request: Request, payload: ComboIn) -> dict[str, Any]:
     return combo
 
 
-@router.get("/combos/{combo_id}")
-async def get_combo(request: Request, combo_id: int) -> dict[str, Any]:
-    combo = await _repo(request).get_combo(combo_id)
-    if combo is None:
-        raise bad_request("Combo not found", param="combo_id")
-    return combo
-
-
 @router.put("/combos/{combo_id}")
 async def update_combo(request: Request, combo_id: int, payload: ComboIn) -> dict[str, Any]:
     repo = _repo(request)
@@ -517,9 +491,25 @@ async def create_model(request: Request, payload: ModelIn) -> dict[str, Any]:
         display_name=payload.display_name,
         price_in=payload.price_in,
         price_out=payload.price_out,
+        price_cache_in=payload.price_cache_in,
         source="manual",
     )
     return {"id": model_id, "provider_id": payload.provider_id, "model": payload.model}
+
+
+@router.put("/models/{model_id}")
+async def update_model(
+    request: Request, model_id: int, payload: ModelPriceIn
+) -> dict[str, Any]:
+    changed = await _repo(request).update_model_pricing(
+        model_id,
+        price_in=payload.price_in,
+        price_out=payload.price_out,
+        price_cache_in=payload.price_cache_in,
+    )
+    if not changed:
+        raise bad_request("Model not found", param="model_id")
+    return {"updated": model_id}
 
 
 @router.delete("/models/{model_id}")

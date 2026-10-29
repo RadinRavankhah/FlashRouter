@@ -221,12 +221,17 @@ class Repository:
         return [_account(row) for row in rows]
 
     async def record_account_use(
-        self, account_id: int, input_tokens: int, output_tokens: int
+        self,
+        account_id: int,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int = 0,
     ) -> None:
         await self._write(
             "UPDATE accounts SET requests=requests+1, input_tokens=input_tokens+?, "
-            "output_tokens=output_tokens+?, updated_at=? WHERE id=?",
-            (input_tokens, output_tokens, now_iso(), account_id),
+            "output_tokens=output_tokens+?, cache_read_tokens=cache_read_tokens+?, "
+            "updated_at=? WHERE id=?",
+            (input_tokens, output_tokens, cache_read_tokens, now_iso(), account_id),
         )
 
     async def cooldown_account(self, account_id: int, seconds: int, error: str) -> None:
@@ -262,6 +267,7 @@ class Repository:
         display_name: str | None = None,
         price_in: float = 0,
         price_out: float = 0,
+        price_cache_in: float | None = None,
         source: str = "manual",
         enabled: bool = True,
     ) -> int:
@@ -270,34 +276,79 @@ class Repository:
         )
         if existing:
             await self._write(
-                "UPDATE models SET display_name=?, price_in=?, price_out=?, source=?, "
-                "enabled=? WHERE id=?",
-                (display_name, price_in, price_out, source, int(enabled), existing["id"]),
+                "UPDATE models SET display_name=?, price_in=?, price_out=?, "
+                "price_cache_in=?, source=?, enabled=? WHERE id=?",
+                (
+                    display_name,
+                    price_in,
+                    price_out,
+                    price_cache_in,
+                    source,
+                    int(enabled),
+                    existing["id"],
+                ),
             )
             return int(existing["id"])
         return await self._write(
             "INSERT INTO models(provider_id, model, display_name, price_in, price_out, "
-            "source, enabled, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            "price_cache_in, source, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 provider_id,
                 model,
                 display_name,
                 price_in,
                 price_out,
+                price_cache_in,
                 source,
                 int(enabled),
                 now_iso(),
             ),
         )
 
-    async def get_model_price(self, provider_id: int, model: str) -> tuple[float, float]:
+    async def ensure_model(
+        self, *, provider_id: int, model: str, source: str = "discover"
+    ) -> int:
+        """Insert a discovered model without overwriting existing pricing."""
+        existing = await self._fetchone(
+            "SELECT id FROM models WHERE provider_id=? AND model=?", (provider_id, model)
+        )
+        if existing:
+            return int(existing["id"])
+        return await self._write(
+            "INSERT INTO models(provider_id, model, source, created_at) VALUES (?,?,?,?)",
+            (provider_id, model, source, now_iso()),
+        )
+
+    async def update_model_pricing(
+        self,
+        model_id: int,
+        *,
+        price_in: float,
+        price_out: float,
+        price_cache_in: float | None,
+    ) -> bool:
+        changed = await self._write(
+            "UPDATE models SET price_in=?, price_out=?, price_cache_in=? WHERE id=?",
+            (price_in, price_out, price_cache_in, model_id),
+        )
+        return changed > 0
+
+    async def get_model_price(
+        self, provider_id: int, model: str
+    ) -> tuple[float, float, float | None]:
         row = await self._fetchone(
-            "SELECT price_in, price_out FROM models WHERE provider_id=? AND model=?",
+            "SELECT price_in, price_out, price_cache_in FROM models "
+            "WHERE provider_id=? AND model=?",
             (provider_id, model),
         )
         if row is None:
-            return (0.0, 0.0)
-        return (float(row["price_in"]), float(row["price_out"]))
+            return (0.0, 0.0, None)
+        cache_price = row["price_cache_in"]
+        return (
+            float(row["price_in"]),
+            float(row["price_out"]),
+            float(cache_price) if cache_price is not None else None,
+        )
 
     async def models_by_name(self, model: str) -> list[dict[str, Any]]:
         rows = await self._fetchall(
@@ -520,6 +571,8 @@ class Repository:
             "ttft_ms",
             "input_tokens",
             "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
             "cost",
             "attempts",
         }
@@ -567,6 +620,8 @@ class Repository:
             "retry_reason",
             "input_tokens",
             "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
             "cost",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
@@ -655,11 +710,14 @@ class Repository:
         model: str | None,
         input_tokens: int,
         output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
         cost: float,
     ) -> None:
         await self._write(
             "INSERT INTO usage_records(request_id, provider_id, account_id, key_id, model, "
-            "input_tokens, output_tokens, cost, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost, "
+            "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 request_id,
                 provider_id,
@@ -668,6 +726,8 @@ class Repository:
                 model,
                 input_tokens,
                 output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
                 cost,
                 now_iso(),
             ),
@@ -678,25 +738,26 @@ class Repository:
         totals = await self._fetchone(
             "SELECT COUNT(*) AS requests, "
             "SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success, "
-            "SUM(CASE WHEN status IN ('error','interrupted') THEN 1 ELSE 0 END) AS errors, "
             "COALESCE(SUM(input_tokens),0) AS input_tokens, "
             "COALESCE(SUM(output_tokens),0) AS output_tokens, "
-            "COALESCE(SUM(cost),0) AS cost, "
-            "AVG(duration_ms) AS avg_duration_ms, "
-            "AVG(ttft_ms) AS avg_ttft_ms FROM requests"
+            "COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens, "
+            "COALESCE(SUM(cache_write_tokens),0) AS cache_write_tokens, "
+            "COALESCE(SUM(cost),0) AS cost FROM requests"
         )
         today = await self._fetchone(
             "SELECT COUNT(*) AS requests, COALESCE(SUM(cost),0) AS cost, "
             "COALESCE(SUM(input_tokens),0) AS input_tokens, "
-            "COALESCE(SUM(output_tokens),0) AS output_tokens "
+            "COALESCE(SUM(output_tokens),0) AS output_tokens, "
+            "COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens, "
+            "COALESCE(SUM(cache_write_tokens),0) AS cache_write_tokens "
             "FROM requests WHERE date(created_at)=date('now')"
         )
         timeseries = await self._fetchall(
             "SELECT date(created_at) AS day, COUNT(*) AS requests, "
             "COALESCE(SUM(input_tokens),0) AS input_tokens, "
             "COALESCE(SUM(output_tokens),0) AS output_tokens, "
-            "COALESCE(SUM(cost),0) AS cost, "
-            "SUM(CASE WHEN status IN ('error','interrupted') THEN 1 ELSE 0 END) AS errors "
+            "COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens, "
+            "COALESCE(SUM(cost),0) AS cost "
             "FROM requests WHERE created_at >= datetime('now','-14 days') "
             "GROUP BY date(created_at) ORDER BY day"
         )
@@ -704,20 +765,15 @@ class Repository:
             "SELECT COALESCE(resolved_provider,'unknown') AS provider, COUNT(*) AS requests, "
             "COALESCE(SUM(input_tokens),0) AS input_tokens, "
             "COALESCE(SUM(output_tokens),0) AS output_tokens, "
+            "COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens, "
             "COALESCE(SUM(cost),0) AS cost FROM requests "
             "GROUP BY resolved_provider ORDER BY requests DESC"
         )
-        by_model = await self._fetchall(
-            "SELECT COALESCE(resolved_model,'unknown') AS model, COUNT(*) AS requests, "
-            "COALESCE(SUM(input_tokens),0) AS input_tokens, "
-            "COALESCE(SUM(output_tokens),0) AS output_tokens, "
-            "COALESCE(SUM(cost),0) AS cost FROM requests "
-            "GROUP BY resolved_model ORDER BY requests DESC LIMIT 12"
-        )
         recent = await self._fetchall(
             "SELECT request_id, created_at, requested_model, resolved_provider, "
-            "resolved_model, status, http_status, input_tokens, output_tokens, cost, "
-            "duration_ms FROM requests ORDER BY id DESC LIMIT 10"
+            "resolved_model, status, http_status, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_write_tokens, cost, duration_ms "
+            "FROM requests ORDER BY id DESC LIMIT 10"
         )
         counts = await self._fetchone(
             "SELECT (SELECT COUNT(*) FROM providers) AS providers, "
@@ -730,7 +786,6 @@ class Repository:
             "today": dict(today) if today else {},
             "timeseries": [dict(row) for row in timeseries],
             "by_provider": [dict(row) for row in by_provider],
-            "by_model": [dict(row) for row in by_model],
             "recent": [dict(row) for row in recent],
             "counts": dict(counts) if counts else {},
         }

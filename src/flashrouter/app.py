@@ -146,7 +146,7 @@ def create_app(
         # Optional admin token.
         admin_token = settings.admin.token
         if admin_token and path.startswith("/admin/api"):
-            exempt = {"/admin/api/setup/status", "/admin/api/health"}
+            exempt = {"/admin/api/health"}
             if path not in exempt:
                 supplied = request.headers.get("x-admin-token", "")
                 if supplied != admin_token:

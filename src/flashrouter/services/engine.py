@@ -19,7 +19,7 @@ from flashrouter.errors import (
 from flashrouter.logging import get_logger
 from flashrouter.routing.engine import Candidate, Router, order_accounts
 from flashrouter.savers.rtk import apply_token_saver
-from flashrouter.services.usage import estimate_cost, extract_usage, usage_from_sse_line
+from flashrouter.services.usage import Usage, estimate_cost, extract_usage, usage_from_sse_line
 from flashrouter.storage.repository import Repository
 from flashrouter.transport.headers import (
     build_upstream_headers,
@@ -65,7 +65,7 @@ class _SseAccumulator:
     def __init__(self) -> None:
         self._buffer = ""
         self.text = ""
-        self.usage: tuple[int, int] = (0, 0)
+        self.usage: Usage = Usage()
         self.finish_reason: str | None = None
         self._truncated = False
 
@@ -261,7 +261,7 @@ class Engine:
         except (TypeError, ValueError) as exc:
             raise upstream_error(502, f"Could not encode request: {exc}") from exc
 
-        price_in, price_out = await self._repo.get_model_price(
+        price_in, price_out, price_cache_in = await self._repo.get_model_price(
             candidate.provider_id, candidate.model
         )
 
@@ -285,6 +285,7 @@ class Engine:
                 key_id=key_id,
                 price_in=price_in,
                 price_out=price_out,
+                price_cache_in=price_cache_in,
             )
 
         response = await self._client.send(request)
@@ -300,12 +301,12 @@ class Engine:
             payload = json.loads(content)
         except (ValueError, TypeError):
             payload = {}
-        input_tokens, output_tokens = extract_usage(payload)
+        usage = extract_usage(payload)
         cost = estimate_cost(
             price_in=price_in,
             price_out=price_out,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            price_cache_in=price_cache_in,
+            usage=usage,
         )
         duration_ms = int((time.perf_counter() - started) * 1000)
         await self._repo.add_payload(
@@ -316,8 +317,10 @@ class Engine:
             {
                 "status": "success",
                 "http_status": response.status_code,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_read_tokens": usage.cache_read_tokens,
+                "cache_write_tokens": usage.cache_write_tokens,
                 "cost": cost,
             },
         )
@@ -326,8 +329,7 @@ class Engine:
             candidate=candidate,
             account=account,
             key_id=key_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            usage=usage,
             cost=cost,
         )
         await self._repo.finish_request(
@@ -338,19 +340,22 @@ class Engine:
                 "status": "success",
                 "http_status": response.status_code,
                 "duration_ms": duration_ms,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cache_read_tokens": usage.cache_read_tokens,
+                "cache_write_tokens": usage.cache_write_tokens,
                 "cost": cost,
                 "attempts": attempt_n,
             },
         )
         self._logger.info(
-            "request_ok id=%s provider=%s model=%s tokens=%s/%s ms=%s",
+            "request_ok id=%s provider=%s model=%s tokens=%s/%s cache_read=%s ms=%s",
             request_id,
             candidate.provider_name,
             candidate.model,
-            input_tokens,
-            output_tokens,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
             duration_ms,
         )
         return Response(
@@ -401,6 +406,7 @@ class Engine:
         key_id: int | None,
         price_in: float,
         price_out: float,
+        price_cache_in: float | None,
     ) -> StreamingResponse:
         async def iterator():
             accumulator = _SseAccumulator()
@@ -419,12 +425,12 @@ class Engine:
                 self._logger.warning("stream_error id=%s %s", request_id, error_message)
             finally:
                 await response.aclose()
-                input_tokens, output_tokens = accumulator.usage
+                usage = accumulator.usage
                 cost = estimate_cost(
                     price_in=price_in,
                     price_out=price_out,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
+                    price_cache_in=price_cache_in,
+                    usage=usage,
                 )
                 duration_ms = int((time.perf_counter() - started) * 1000)
                 ttft_ms = (
@@ -440,8 +446,10 @@ class Engine:
                             "text": accumulator.text,
                             "finish_reason": accumulator.finish_reason,
                             "usage": {
-                                "input_tokens": input_tokens,
-                                "output_tokens": output_tokens,
+                                "input_tokens": usage.input_tokens,
+                                "output_tokens": usage.output_tokens,
+                                "cache_read_tokens": usage.cache_read_tokens,
+                                "cache_write_tokens": usage.cache_write_tokens,
                             },
                         }
                     ),
@@ -452,8 +460,10 @@ class Engine:
                         "status": status,
                         "http_status": response.status_code,
                         "error_message": error_message,
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens,
+                        "cache_read_tokens": usage.cache_read_tokens,
+                        "cache_write_tokens": usage.cache_write_tokens,
                         "cost": cost,
                     },
                 )
@@ -463,8 +473,7 @@ class Engine:
                         candidate=candidate,
                         account=account,
                         key_id=key_id,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
+                        usage=usage,
                         cost=cost,
                     )
                 await self._repo.finish_request(
@@ -478,18 +487,24 @@ class Engine:
                         "error_message": error_message,
                         "duration_ms": duration_ms,
                         "ttft_ms": ttft_ms,
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens,
+                        "cache_read_tokens": usage.cache_read_tokens,
+                        "cache_write_tokens": usage.cache_write_tokens,
                         "cost": cost,
                         "attempts": attempt_n,
                     },
                 )
                 self._logger.info(
-                    "request_stream id=%s provider=%s model=%s status=%s ms=%s",
+                    "request_stream id=%s provider=%s model=%s status=%s "
+                    "tokens=%s/%s cache_read=%s ms=%s",
                     request_id,
                     candidate.provider_name,
                     candidate.model,
                     status,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cache_read_tokens,
                     duration_ms,
                 )
 
@@ -517,19 +532,22 @@ class Engine:
         candidate: Candidate,
         account: dict[str, Any],
         key_id: int | None,
-        input_tokens: int,
-        output_tokens: int,
+        usage: Usage,
         cost: float,
     ) -> None:
-        await self._repo.record_account_use(account["id"], input_tokens, output_tokens)
+        await self._repo.record_account_use(
+            account["id"], usage.input_tokens, usage.output_tokens, usage.cache_read_tokens
+        )
         await self._repo.add_usage(
             request_id=request_id,
             provider_id=candidate.provider_id,
             account_id=account["id"],
             key_id=key_id,
             model=candidate.model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
             cost=cost,
         )
 

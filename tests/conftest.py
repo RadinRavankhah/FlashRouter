@@ -29,7 +29,9 @@ def build_client(
     return TestClient(app), upstream
 
 
-def chat_completion(model: str = "mock-model", content: str = "hello") -> dict:
+def chat_completion(
+    model: str = "mock-model", content: str = "hello", cached_tokens: int = 0
+) -> dict:
     return {
         "id": "chatcmpl-1",
         "object": "chat.completion",
@@ -42,5 +44,10 @@ def chat_completion(model: str = "mock-model", content: str = "hello") -> dict:
                 "finish_reason": "stop",
             }
         ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "prompt_tokens_details": {"cached_tokens": cached_tokens},
+        },
     }

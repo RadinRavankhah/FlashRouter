@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
 from tests.conftest import build_client, chat_completion
 
@@ -31,6 +32,7 @@ def _setup(
             "model": model,
             "price_in": 1.0,
             "price_out": 2.0,
+            "price_cache_in": 0.25,
         },
     )
     client.post(
@@ -77,6 +79,48 @@ def test_chat_completion_end_to_end(settings: Path):
         ids = {m["id"] for m in models["data"]}
         assert "flash" in ids
         assert "mock/mock-model" in ids
+
+
+def test_cache_tokens_recorded_and_discounted(settings: Path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=chat_completion(cached_tokens=6))
+
+    client, upstream = build_client(settings, handler)
+    with client:
+        ctx = _setup(client)
+        response = client.post(
+            "/v1/chat/completions",
+            headers=_auth(ctx["key"]),
+            json={"model": "flash", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert response.status_code == 200, response.text
+
+        item = client.get("/admin/api/requests").json()["items"][0]
+        assert item["cache_read_tokens"] == 6
+        assert item["cost"] == pytest.approx(0.0000155)
+
+        detail = client.get(
+            f"/admin/api/requests/{response.headers['X-FlashRouter-Request-ID']}"
+        ).json()
+        assert detail["attempts"][0]["cache_read_tokens"] == 6
+
+        accounts = client.get(
+            f"/admin/api/providers/{ctx['provider']['id']}/accounts"
+        ).json()
+        assert accounts[0]["cache_read_tokens"] == 6
+
+        stats = client.get("/admin/api/stats").json()
+        assert stats["totals"]["cache_read_tokens"] == 6
+        assert stats["by_provider"][0]["cache_read_tokens"] == 6
+
+        model = client.get("/admin/api/models").json()[0]
+        assert model["price_cache_in"] == 0.25
+        updated = client.put(
+            f"/admin/api/models/{model['id']}",
+            json={"price_in": 1.0, "price_out": 2.0, "price_cache_in": 0.1},
+        )
+        assert updated.status_code == 200
+        assert client.get("/admin/api/models").json()[0]["price_cache_in"] == 0.1
 
 
 def test_fallback_on_rate_limit(settings: Path):
@@ -134,7 +178,8 @@ def test_streaming_forwards_and_records_usage(settings: Path):
         for chunk in [
             b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
             b'data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}\n\n',
-            b'data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2}}\n\n',
+            b'data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,'
+            b'"prompt_tokens_details":{"cached_tokens":3}}}\n\n',
             b"data: [DONE]\n\n",
         ]:
             yield chunk
@@ -165,6 +210,7 @@ def test_streaming_forwards_and_records_usage(settings: Path):
         assert item["stream"] == 1
         assert item["input_tokens"] == 4
         assert item["output_tokens"] == 2
+        assert item["cache_read_tokens"] == 3
 
 
 def test_auth_is_enforced_once_keys_exist(settings: Path):
