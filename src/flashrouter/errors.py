@@ -40,6 +40,44 @@ def error_body(
     return {"error": error}
 
 
+def anthropic_error_type(status_code: int, error_type: str) -> str:
+    """Map a gateway error onto an Anthropic API error type."""
+    if status_code == 404:
+        return "not_found_error"
+    if status_code == 401:
+        return "authentication_error"
+    if status_code == 403:
+        return "permission_error"
+    if status_code == 429:
+        return "rate_limit_error"
+    if error_type in {
+        "authentication_error",
+        "permission_error",
+        "invalid_request_error",
+        "not_found_error",
+        "rate_limit_error",
+    }:
+        return error_type
+    if status_code >= 500 or error_type in {"server_error", "upstream_error"}:
+        return "api_error"
+    return "invalid_request_error"
+
+
+def anthropic_error_body(
+    message: str,
+    *,
+    status_code: int,
+    error_type: str = "invalid_request_error",
+) -> dict[str, Any]:
+    return {
+        "type": "error",
+        "error": {
+            "type": anthropic_error_type(status_code, error_type),
+            "message": message,
+        },
+    }
+
+
 def model_not_found(model: str) -> GatewayError:
     return GatewayError(
         404,

@@ -5,11 +5,12 @@
 
 ## Goal
 
-A Python, local-first **OpenAI-compatible LLM gateway** that is a practical clone of
-[9router](https://github.com/decolua/9router): point Claude Code / Codex / Cursor / Cline /
-any OpenAI SDK at `http://127.0.0.1:20128/v1`, and FlashRouter routes requests across
-configured providers with **auto-fallback**, **multi-account rotation**, **token saving**,
-and a **management dashboard**.
+A Python, local-first **OpenAI- and Anthropic-compatible LLM gateway** that is a
+practical clone of [9router](https://github.com/decolua/9router): point Claude Code /
+Codex / Cursor / Cline / any OpenAI or Anthropic SDK at `http://127.0.0.1:20128`
+(`/v1` for OpenAI, root for Anthropic), and FlashRouter routes requests across
+configured providers with **auto-fallback**, **multi-account rotation**, **token
+saving**, and a **management dashboard**.
 
 First-run experience target:
 
@@ -24,10 +25,12 @@ Open `http://127.0.0.1:20128` → add a provider → create a combo → use `/v1
 
 ## Scope decisions (locked)
 
-- **OpenAI-compatible providers only.** No Anthropic/Gemini native protocol translation.
-  Presets point at providers' OpenAI-compatible endpoints (OpenRouter, Groq, DeepSeek,
-  GLM/Zhipu, MiniMax, Mistral, Google Gemini OpenAI endpoint, Together, Cerebras, OpenAI,
-  local llama.cpp/LM Studio/Ollama, custom OpenAI-compatible).
+- **Endpoint mirroring, no translation.** OpenAI Chat Completions
+  (`/v1/chat/completions`, `/v1/responses`) and Anthropic Messages
+  (`/v1/messages`, `/v1/messages/count_tokens`) are proxied to the matching
+  upstream endpoint. There is no payload translation between API styles and no
+  Gemini-native protocol. Presets point at both OpenAI-compatible and
+  Anthropic-compatible roots.
 - **Legit only.** No subscription OAuth (Claude Code/Codex/Copilot/Cursor/Kiro). Provider
   plugin interface is left extensible for later.
 - **Install UX:** standard `pip install -e .` + `flashrouter run`, plus one-command
@@ -38,7 +41,8 @@ Open `http://127.0.0.1:20128` → add a provider → create a combo → use `/v1
 
 ## Core concepts
 
-- **Provider** — an upstream base URL + protocol (`openai-chat`) + optional headers.
+- **Provider** — an upstream base URL + protocol (`openai-chat` or
+  `anthropic-messages`) + optional headers.
 - **Account** — an API key (or no-auth) attached to a provider; multiple per provider;
   has `weight`, `priority`, `enabled`, `cooldown_until`, usage counters.
 - **Model** — optional catalog entry per provider (`provider_id` + `model`), used for
@@ -57,7 +61,8 @@ Open `http://127.0.0.1:20128` → add a provider → create a combo → use `/v1
    - Choose eligible account (enabled, not cooling, under quota): priority then weighted
      round-robin.
    - Apply RTK token saver to `role: "tool"` message content.
-   - Dispatch to `base_url` + `/chat/completions` (or `/responses`) with account secret.
+   - Dispatch to `base_url` + the mirrored endpoint (`/chat/completions`,
+     `/responses`, `/messages`, `/messages/count_tokens`) with the account secret.
    - **Streaming:** pass through SSE incrementally; never buffer the whole response for
      the client.
 4. Failure handling:
@@ -88,7 +93,7 @@ src/flashrouter/
   storage/database.py    # aiosqlite connect + migrate
   storage/migrations.py  # schema versions
   storage/repository.py  # CRUD, request log, stats
-  api/inference.py       # /v1/chat/completions, /v1/models, /v1/responses
+  api/inference.py       # /v1/chat/completions, /v1/messages, /v1/models, /v1/responses
   api/admin.py           # /admin/api/*
   transport/http.py      # pooled httpx clients
   transport/headers.py   # header allowlist/filtering
@@ -127,22 +132,26 @@ docs/ROADMAP.md          # this file
 | M5 | Dashboard redesign + committed dist | done |
 | M6 | README rewrite, tests, ruff + tsc, version bump | done |
 | M7 | Cache read/write token tracking, cache-aware pricing, Models page | done |
+| M8 | Anthropic Messages pass-through (`/v1/messages`, `count_tokens`), presets, hybrid models | done |
 
 ## Definition of done
 
 `git clone` → `./flashrouter run` → dashboard at `:20128` → add provider → create combo →
-OpenAI SDK / Claude Code (via OpenAI endpoint) works with streaming + tool calls →
+OpenAI SDK and Claude Code (native `/v1/messages`) work with streaming + tool calls →
 auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `pytest` green,
 `npm run build` succeeds and `ui/dist` is committed.
 
 ## Status
 
-- **Phase:** M0–M7 complete.
+- **Phase:** M0–M8 complete.
 - **Working now:**
   - New core package (config, storage/migrations, repository, providers presets,
     router, engine, RTK saver, usage).
   - `/v1/chat/completions` (stream + non-stream), `/v1/models`, `/v1/responses`
-    pass-through, `/healthz`.
+    pass-through, `/v1/messages` + `/v1/messages/count_tokens` pass-through,
+    `/healthz`.
+  - Anthropic-style streaming usage accounting and Anthropic error envelopes.
+  - Hybrid `/v1/models` response usable by both OpenAI and Anthropic SDKs.
   - Auto-fallback across combo targets with account cooldown + weighted rotation.
   - Full admin API + redesigned React dashboard (built into `ui/dist`).
   - Cache read/write token tracking, per-model pricing (including cache-read price)
@@ -150,11 +159,12 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   - Provider discovery imports model prices when the upstream `/models` payload
     includes them.
   - CLI: run/doctor/backup/restore/reset-admin/version/open + bootstrap launchers.
-  - 40 tests passing; ruff clean; `ui` builds.
+  - 55 tests passing; ruff clean; `ui` builds.
 - **Known gaps / next:**
   - Add more tests (cooldown, admin CRUD, RTK edge cases, restore CLI).
-  - `/v1/responses` is pass-through only (no chat↔responses translation).
-  - Version still `0.3.0`; bump to `1.0.0` when accepted.
+  - No chat↔messages translation; `/v1/responses` and `/v1/messages` are
+    pass-through only.
+  - Version now `0.4.0`; bump to `1.0.0` when accepted.
 
 ## Changelog
 
@@ -182,3 +192,10 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   Together-style per-token values, generic per-1M values), normalizes them to USD
   per 1M, backfills unpriced models, and preserves manual prices. Added pricing
   parser unit tests and a discovery integration test (40 tests).
+- (session 6) Added Anthropic Messages pass-through:
+  `POST /v1/messages` and `/v1/messages/count_tokens` mirror the incoming API to
+  `{base_url}/messages` with model remapping only. Dual `x-api-key`/Bearer auth,
+  forwarded `anthropic-version`/`anthropic-beta` and `?beta=true`, Anthropic
+  error envelopes, streaming usage capture (`message_start`/`message_delta`),
+  hybrid `/v1/models`, `requests.endpoint` (schema v4) with dashboard filter,
+  Anthropic-compatible presets, and a provider protocol selector (55 tests).

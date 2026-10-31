@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -181,5 +181,8 @@ MIGRATIONS: dict[int, str] = {
     ALTER TABLE usage_records ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE accounts ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE models ADD COLUMN price_cache_in REAL;
+    """,
+    4: """
+    ALTER TABLE requests ADD COLUMN endpoint TEXT NOT NULL DEFAULT 'chat/completions';
     """,
 }

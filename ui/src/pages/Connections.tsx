@@ -32,6 +32,7 @@ function ProviderModal({
   const [presetId, setPresetId] = useState(provider?.preset ?? "openrouter");
   const [name, setName] = useState(provider?.name ?? "");
   const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? "");
+  const [protocol, setProtocol] = useState(provider?.protocol ?? "openai-chat");
   const [priority, setPriority] = useState(provider?.priority ?? 100);
   const [enabled, setEnabled] = useState(provider?.enabled ?? true);
   const [headers, setHeaders] = useState(JSON.stringify(provider?.headers ?? {}, null, 2));
@@ -43,6 +44,7 @@ function ProviderModal({
     if (preset) {
       setName(preset.name);
       setBaseUrl(preset.base_url);
+      setProtocol(preset.protocol ?? "openai-chat");
     }
   };
 
@@ -60,7 +62,7 @@ function ProviderModal({
         name: name.trim() || "Provider",
         base_url: baseUrl.trim(),
         preset: presetId,
-        protocol: "openai-chat",
+        protocol,
         headers: parsedHeaders,
         enabled,
         priority: Number(priority) || 100,
@@ -105,12 +107,21 @@ function ProviderModal({
       <Field label="Name">
         <input value={name} onChange={(event) => setName(event.target.value)} placeholder="My provider" />
       </Field>
-      <Field label="Base URL" hint="OpenAI API root, usually ending in /v1">
+      <Field label="Base URL" hint="API root including the version, e.g. .../v1 or .../anthropic/v1">
         <input
           value={baseUrl}
           onChange={(event) => setBaseUrl(event.target.value)}
           placeholder="https://openrouter.ai/api/v1"
         />
+      </Field>
+      <Field
+        label="Protocol"
+        hint="Anthropic Messages for native /v1/messages endpoints"
+      >
+        <select value={protocol} onChange={(event) => setProtocol(event.target.value)}>
+          <option value="openai-chat">OpenAI Chat Completions</option>
+          <option value="anthropic-messages">Anthropic Messages</option>
+        </select>
       </Field>
       <div className="row">
         <Field label="Priority">

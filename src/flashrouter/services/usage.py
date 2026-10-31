@@ -52,12 +52,27 @@ def _details(usage: dict[str, Any], *keys: str) -> dict[str, Any]:
     return {}
 
 
-def extract_usage(payload: Any) -> Usage:
-    """Return normalized token usage from an OpenAI-style response."""
+def _usage_payload(payload: Any) -> dict[str, Any] | None:
+    """Return the usage object from OpenAI/Responses/Anthropic payloads.
+
+    Anthropic streaming ``message_start`` events nest usage under
+    ``message.usage``; everything else puts it at the top level.
+    """
     if not isinstance(payload, dict):
-        return Usage()
+        return None
     usage = payload.get("usage")
-    if not isinstance(usage, dict):
+    if isinstance(usage, dict):
+        return usage
+    message = payload.get("message")
+    if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+        return message["usage"]
+    return None
+
+
+def extract_usage(payload: Any) -> Usage:
+    """Return normalized token usage from an OpenAI- or Anthropic-style payload."""
+    usage = _usage_payload(payload)
+    if usage is None:
         return Usage()
 
     prompt_details = _details(usage, "prompt_tokens_details", "input_tokens_details")
@@ -125,6 +140,21 @@ def usage_from_sse_line(line: str) -> Usage | None:
         payload = json.loads(data)
     except (ValueError, TypeError):
         return None
-    if isinstance(payload, dict) and payload.get("usage"):
-        return extract_usage(payload)
-    return None
+    if _usage_payload(payload) is None:
+        return None
+    return extract_usage(payload)
+
+
+def merge_usage(base: Usage, update: Usage) -> Usage:
+    """Merge incrementally reported usage.
+
+    Anthropic streams usage in two events (``message_start`` carries the input
+    and cache counts, ``message_delta`` the final output count), so fields are
+    combined with ``max`` rather than replaced.
+    """
+    return Usage(
+        input_tokens=max(base.input_tokens, update.input_tokens),
+        output_tokens=max(base.output_tokens, update.output_tokens),
+        cache_read_tokens=max(base.cache_read_tokens, update.cache_read_tokens),
+        cache_write_tokens=max(base.cache_write_tokens, update.cache_write_tokens),
+    )

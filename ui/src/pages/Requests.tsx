@@ -19,6 +19,19 @@ import type { RequestSummary } from "../types";
 
 const PAGE_SIZE = 50;
 
+function apiLabel(endpoint: string): string {
+  switch (endpoint) {
+    case "messages":
+      return "messages";
+    case "messages/count_tokens":
+      return "count tokens";
+    case "responses":
+      return "responses";
+    default:
+      return "chat";
+  }
+}
+
 export default function Requests() {
   const toast = useToast();
   const navigate = useNavigate();
@@ -27,6 +40,7 @@ export default function Requests() {
   const [offset, setOffset] = useState(0);
   const [status, setStatus] = useState("");
   const [model, setModel] = useState("");
+  const [endpoint, setEndpoint] = useState("");
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -37,6 +51,7 @@ export default function Requests() {
     });
     if (status) params.set("status", status);
     if (model) params.set("model", model);
+    if (endpoint) params.set("endpoint", endpoint);
     try {
       const data = await api.get<{ total: number; items: RequestSummary[] }>(
         `/admin/api/requests?${params.toString()}`,
@@ -48,7 +63,7 @@ export default function Requests() {
     } finally {
       setLoading(false);
     }
-  }, [offset, status, model, toast]);
+  }, [offset, status, model, endpoint, toast]);
 
   useEffect(() => {
     load();
@@ -93,6 +108,20 @@ export default function Requests() {
             placeholder="Filter by requested model"
             style={{ maxWidth: 260 }}
           />
+          <select
+            value={endpoint}
+            onChange={(event) => {
+              setOffset(0);
+              setEndpoint(event.target.value);
+            }}
+            style={{ width: 190 }}
+          >
+            <option value="">All endpoints</option>
+            <option value="chat/completions">chat/completions</option>
+            <option value="responses">responses</option>
+            <option value="messages">messages</option>
+            <option value="messages/count_tokens">messages/count_tokens</option>
+          </select>
           <span className="muted">{formatNumber(total)} total</span>
         </div>
       </Card>
@@ -112,6 +141,7 @@ export default function Requests() {
                 <thead>
                   <tr>
                     <th>Time</th>
+                    <th>API</th>
                     <th>Requested</th>
                     <th>Routed to</th>
                     <th>Status</th>
@@ -130,6 +160,7 @@ export default function Requests() {
                       onClick={() => navigate(`/requests/${row.request_id}`)}
                     >
                       <td>{formatRelative(row.created_at)}</td>
+                      <td className="muted">{apiLabel(row.endpoint)}</td>
                       <td>{row.requested_model}</td>
                       <td className="muted">
                         {row.resolved_provider

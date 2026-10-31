@@ -20,3 +20,10 @@ def test_join_keeps_trailing_root():
         join_url("http://127.0.0.1:1234/v1/", "/models")
         == "http://127.0.0.1:1234/v1/models"
     )
+
+
+def test_join_forwards_query():
+    assert (
+        join_url("https://api.anthropic.com/v1", "messages", "beta=true")
+        == "https://api.anthropic.com/v1/messages?beta=true"
+    )

@@ -1,8 +1,10 @@
-"""Built-in OpenAI-compatible provider presets.
+"""Built-in provider presets.
 
-Every preset speaks the OpenAI Chat Completions API, which is all FlashRouter
-needs. Local presets have no authentication; cloud presets require an API key
-that the user adds as an account in the dashboard.
+Most presets speak the OpenAI Chat Completions API. The Anthropic-compatible
+presets expose the native ``/v1/messages`` API (Claude Code style); FlashRouter
+passes those requests through without translating them. Local presets have no
+authentication; cloud presets require an API key that the user adds as an
+account in the dashboard.
 """
 
 from __future__ import annotations
@@ -67,6 +69,46 @@ PRESETS: list[dict[str, Any]] = [
         "docs": "https://platform.openai.com/api-keys",
     },
     {
+        "id": "anthropic",
+        "name": "Anthropic (Messages API)",
+        "base_url": "https://api.anthropic.com/v1",
+        "protocol": "anthropic-messages",
+        "local": False,
+        "docs": "https://console.anthropic.com/settings/keys",
+    },
+    {
+        "id": "zai-anthropic",
+        "name": "z.ai GLM (Anthropic endpoint)",
+        "base_url": "https://api.z.ai/api/anthropic/v1",
+        "protocol": "anthropic-messages",
+        "local": False,
+        "docs": "https://docs.z.ai",
+    },
+    {
+        "id": "minimax-anthropic",
+        "name": "MiniMax (Anthropic endpoint)",
+        "base_url": "https://api.minimax.io/anthropic/v1",
+        "protocol": "anthropic-messages",
+        "local": False,
+        "docs": "https://www.minimax.io/platform/document",
+    },
+    {
+        "id": "deepseek-anthropic",
+        "name": "DeepSeek (Anthropic endpoint)",
+        "base_url": "https://api.deepseek.com/anthropic/v1",
+        "protocol": "anthropic-messages",
+        "local": False,
+        "docs": "https://api-docs.deepseek.com",
+    },
+    {
+        "id": "kimi-anthropic",
+        "name": "Moonshot Kimi (Anthropic endpoint)",
+        "base_url": "https://api.moonshot.ai/anthropic/v1",
+        "protocol": "anthropic-messages",
+        "local": False,
+        "docs": "https://platform.moonshot.ai",
+    },
+    {
         "id": "together",
         "name": "Together AI",
         "base_url": "https://api.together.xyz/v1",
@@ -124,7 +166,7 @@ PRESETS: list[dict[str, Any]] = [
     },
     {
         "id": "custom",
-        "name": "Custom OpenAI-compatible",
+        "name": "Custom (any compatible API)",
         "base_url": "",
         "local": False,
         "docs": "",

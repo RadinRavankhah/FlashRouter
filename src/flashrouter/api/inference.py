@@ -1,4 +1,4 @@
-"""OpenAI-compatible inference endpoints."""
+"""OpenAI- and Anthropic-compatible inference endpoints."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from starlette.responses import JSONResponse
 from flashrouter.errors import bad_request, forbidden, unauthorized
 
 router = APIRouter(prefix="/v1")
+
+ANTHROPIC_FORWARD_HEADERS = ("anthropic-version", "anthropic-beta")
 
 
 def _bearer(request: Request) -> str:
@@ -58,6 +60,15 @@ async def _json_body(request: Request) -> dict[str, Any]:
     return body
 
 
+def _anthropic_headers(request: Request) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for name in ANTHROPIC_FORWARD_HEADERS:
+        values = request.headers.getlist(name)
+        if values:
+            headers[name] = ", ".join(values)
+    return headers
+
+
 @router.post("/chat/completions")
 async def chat_completions(request: Request):
     key = await authenticate(request)
@@ -72,6 +83,47 @@ async def chat_completions(request: Request):
         endpoint="chat/completions",
         stream=bool(body.get("stream")),
         token_saver=_token_saver_override(request),
+    )
+
+
+@router.post("/messages")
+async def messages(request: Request):
+    request.state.dialect = "anthropic"
+    key = await authenticate(request)
+    body = await _json_body(request)
+    if key is not None:
+        await request.app.state.repository.touch_key(key["id"])
+    engine = request.app.state.engine
+    return await engine.handle(
+        body=body,
+        key=key,
+        request_id=request.state.request_id,
+        endpoint="messages",
+        stream=bool(body.get("stream")),
+        dialect="anthropic",
+        incoming_headers=_anthropic_headers(request),
+        query=request.url.query,
+    )
+
+
+@router.post("/messages/count_tokens")
+async def count_message_tokens(request: Request):
+    request.state.dialect = "anthropic"
+    key = await authenticate(request)
+    body = await _json_body(request)
+    if key is not None:
+        await request.app.state.repository.touch_key(key["id"])
+    engine = request.app.state.engine
+    return await engine.handle(
+        body=body,
+        key=key,
+        request_id=request.state.request_id,
+        endpoint="messages/count_tokens",
+        stream=False,
+        dialect="anthropic",
+        incoming_headers=_anthropic_headers(request),
+        query=request.url.query,
+        record_usage=False,
     )
 
 
@@ -98,18 +150,26 @@ async def list_models(request: Request):
     data: list[dict[str, Any]] = []
     seen: set[str] = set()
 
+    def entry(
+        model_id: str, owned_by: str, display_name: str | None = None
+    ) -> dict[str, Any]:
+        # One payload that satisfies both OpenAI (`object`) and Anthropic
+        # (`type`, `display_name`, `created_at`) model listings.
+        return {
+            "id": model_id,
+            "object": "model",
+            "created": 0,
+            "owned_by": owned_by,
+            "type": "model",
+            "display_name": display_name or model_id,
+            "created_at": "1970-01-01T00:00:00Z",
+        }
+
     for combo in await repo.list_combos():
         if not combo["enabled"]:
             continue
         seen.add(combo["name"])
-        data.append(
-            {
-                "id": combo["name"],
-                "object": "model",
-                "created": 0,
-                "owned_by": "flashrouter",
-            }
-        )
+        data.append(entry(combo["name"], "flashrouter"))
 
     for model in await repo.list_models():
         if not model["enabled"]:
@@ -119,12 +179,19 @@ async def list_models(request: Request):
             continue
         seen.add(model_id)
         data.append(
-            {
-                "id": model_id,
-                "object": "model",
-                "created": 0,
-                "owned_by": model["provider_name"],
-            }
+            entry(
+                model_id,
+                model["provider_name"],
+                model.get("display_name") or model["model"],
+            )
         )
 
-    return JSONResponse({"object": "list", "data": data})
+    return JSONResponse(
+        {
+            "object": "list",
+            "data": data,
+            "has_more": False,
+            "first_id": data[0]["id"] if data else None,
+            "last_id": data[-1]["id"] if data else None,
+        }
+    )

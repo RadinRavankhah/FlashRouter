@@ -86,6 +86,8 @@ export default function RequestDetail() {
         <dl className="kv">
           <dt>Created</dt>
           <dd>{formatDateTime(record.created_at)}</dd>
+          <dt>API</dt>
+          <dd>{record.endpoint}</dd>
           <dt>API key</dt>
           <dd>{record.key_name ?? "—"}</dd>
           <dt>Requested model</dt>

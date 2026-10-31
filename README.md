@@ -1,17 +1,19 @@
 # FlashRouter
 
-**A local-first, OpenAI-compatible LLM router with automatic fallback.**
+**A local-first LLM router with automatic fallback, speaking the OpenAI and Anthropic APIs.**
 
 Point any OpenAI-compatible client (OpenAI SDK, Cursor, Cline, OpenCode, Roo,
-Continue, scripts…) at one local endpoint and let FlashRouter route requests
-across your providers with **combos**, **multi-account rotation**, **auto-fallback**
-and a **token saver** — all managed from a local dashboard.
+Continue, scripts…) **or any Anthropic-compatible client (Claude Code, Anthropic
+SDK)** at one local endpoint and let FlashRouter route requests across your
+providers with **combos**, **multi-account rotation**, **auto-fallback** and a
+**token saver** — all managed from a local dashboard.
 
 ```text
    Your client                         FlashRouter (localhost:20128)
   ─────────────                       ─────────────────────────────
   OpenAI SDK / Cursor / Cline  ──▶  /v1/chat/completions
-  any OpenAI-compatible tool         │
+  Claude Code / Anthropic SDK  ──▶  /v1/messages
+  any OpenAI/Anthropic tool         │
                                      ├─ resolve "coding-fast" → combo
                                      ├─ pick an eligible account (rotation)
                                      ├─ RTK: compress huge tool outputs
@@ -22,10 +24,12 @@ and a **token saver** — all managed from a local dashboard.
 
 ## Features
 
-- **One OpenAI endpoint** — `/v1/chat/completions`, `/v1/models`, `/v1/responses`.
+- **OpenAI + Anthropic endpoints** — `/v1/chat/completions`, `/v1/messages`,
+  `/v1/messages/count_tokens`, `/v1/models`, `/v1/responses`.
 - **Providers** — OpenRouter, Groq, DeepSeek, GLM, MiniMax, Mistral, Gemini
   (OpenAI endpoint), OpenAI, Together, Cerebras, Fireworks, NVIDIA, xAI,
-  Ollama / LM Studio / llama.cpp, or any custom OpenAI-compatible base URL.
+  Ollama / LM Studio / llama.cpp, Anthropic, z.ai, MiniMax, DeepSeek and Kimi
+  (Anthropic endpoints), or any custom compatible base URL.
 - **Multiple accounts per provider** — weighted, priority-based rotation and
   automatic cooldown when an account is rate-limited or out of quota.
 - **Combos** — ordered fallback chains selected by the model name clients send.
@@ -40,9 +44,12 @@ and a **token saver** — all managed from a local dashboard.
   logs and usage.
 - **Local & private** — SQLite storage, binds to `127.0.0.1` by default.
 
-> Scope: FlashRouter speaks the **OpenAI Chat Completions API**. It does not
-> translate Anthropic Messages or Gemini-native protocols, and does not use
-> subscription OAuth. Anything that talks OpenAI-compatible HTTP works.
+> Scope: FlashRouter speaks the **OpenAI Chat Completions API** and mirrors the
+> **Anthropic Messages API** (`/v1/messages`) without translating between them.
+> The provider you route to must expose the same API style. It does not
+> translate Anthropic ↔ OpenAI payloads or Gemini-native protocols, and does
+> not use subscription OAuth. Anything that talks OpenAI- or
+> Anthropic-compatible HTTP works.
 
 ## Clone and run
 
@@ -147,10 +154,45 @@ curl http://127.0.0.1:20128/v1/chat/completions \
   -d '{"model":"coding-fast","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+### Anthropic Messages / Claude Code
+
+FlashRouter mirrors the Anthropic Messages API at the same host. The upstream
+provider must expose an Anthropic-compatible `/v1/messages` endpoint (Anthropic
+itself, or providers such as z.ai, MiniMax, DeepSeek and Kimi — several
+Anthropic presets are built in). No payload translation is performed.
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    api_key="YOUR_FLASHROUTER_KEY",
+    base_url="http://127.0.0.1:20128",
+)
+
+response = client.messages.create(
+    model="coding-fast",          # a combo name
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(response.content[0].text)
+```
+
+For Claude Code:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:20128
+export ANTHROPIC_API_KEY=YOUR_FLASHROUTER_KEY
+# or: export ANTHROPIC_AUTH_TOKEN=YOUR_FLASHROUTER_KEY
+```
+
+Use a combo name (or `provider/model`) as the model. `count_tokens` calls are
+passed through to the same upstream as well.
+
 In GUI/CLI tools, set:
 
-- **Base URL / endpoint:** `http://127.0.0.1:20128/v1`
-- **API key:** a key from the dashboard
+- **OpenAI base URL:** `http://127.0.0.1:20128/v1`
+- **Anthropic base URL:** `http://127.0.0.1:20128`
+- **API key:** a key from the dashboard (Bearer or `x-api-key`)
 - **Model:** a combo name (or `provider/model`)
 
 ## How routing works
@@ -179,9 +221,10 @@ Every successful request and attempt stores the full token breakdown:
 
 FlashRouter reads the common OpenAI-compatible shapes:
 `prompt_tokens_details.cached_tokens` (Chat), `input_tokens_details.cached_tokens`
-(Responses), DeepSeek's `prompt_cache_hit_tokens`, and Anthropic-style
-`cache_read_input_tokens` / `cache_creation_input_tokens` when a gateway passes
-them through. Anthropic-style values are normalized so input always includes the
+(Responses), DeepSeek's `prompt_cache_hit_tokens`, and native Anthropic
+`cache_read_input_tokens` / `cache_creation_input_tokens` from both
+`/v1/messages` responses and streaming `message_start` / `message_delta`
+events. Anthropic-style values are normalized so input always includes the
 cached portion.
 
 Cost is estimated per model from **Models → pricing** (USD per 1M tokens):
@@ -246,26 +289,38 @@ X-FlashRouter-Token-Saver: off   # or: on
 ```
 
 The header wins over the global setting. RTK is lossy and intentionally scoped to
-chat completions — `/v1/responses` is passed through untouched. It does not count
-tokens; savings are inferred from the smaller payload, not measured.
+chat completions — `/v1/responses`, `/v1/messages` and `/v1/messages/count_tokens`
+are passed through untouched. It does not count tokens; savings are inferred from
+the smaller payload, not measured.
 
 ## Endpoints
 
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions (streaming + tools) |
+| `POST` | `/v1/messages` | Anthropic Messages, passed through to an Anthropic-compatible upstream |
+| `POST` | `/v1/messages/count_tokens` | Anthropic token counting, passed through |
 | `POST` | `/v1/responses` | Pass-through for Responses-compatible upstreams |
-| `GET` | `/v1/models` | Combos and catalog models |
+| `GET` | `/v1/models` | Combos and catalog models (OpenAI and Anthropic listing shapes) |
 | `GET` | `/healthz` | Liveness check |
 | `GET` | `/` · `/dashboard` | Dashboard (static build in `ui/dist`) |
 
 Inference requests require `Authorization: Bearer <key>` (or `x-api-key`) once at
-least one API key exists.
+least one API key exists. The client credential is never forwarded upstream; the
+selected account's secret is used instead. For `/v1/messages` it is sent as both
+`x-api-key` and `Authorization: Bearer`, so native Anthropic and
+Anthropic-compatible aggregators both work.
 
-Errors use the OpenAI envelope:
+Errors use the OpenAI envelope on OpenAI endpoints:
 
 ```json
 { "error": { "message": "...", "type": "invalid_request_error", "code": "..." } }
+```
+
+and the Anthropic envelope on `/v1/messages`:
+
+```json
+{ "type": "error", "error": { "type": "not_found_error", "message": "..." } }
 ```
 
 ## Configuration
@@ -319,7 +374,7 @@ src/flashrouter/
   app.py                 FastAPI factory, middleware, static dashboard
   cli.py                 command-line entry point
   config.py              optional TOML + env configuration
-  providers/presets.py   built-in OpenAI-compatible presets
+  providers/presets.py   built-in OpenAI- and Anthropic-compatible presets
   routing/engine.py      model resolution + account selection
   services/engine.py     request orchestration, fallback, streaming, logging
   services/usage.py      usage normalization + cost estimate
@@ -367,8 +422,9 @@ npm run build
 
 ## Limitations
 
-- OpenAI Chat Completions clients only (no Anthropic/Claude Code or Responses
-  translation; `/v1/responses` is pass-through only).
+- No payload translation between API styles. `/v1/messages` only works when the
+  selected provider exposes an Anthropic-compatible `/v1/messages` endpoint;
+  `/v1/responses` is pass-through only. Gemini-native protocols are unsupported.
 - Costs are **estimates** based on optional per-model prices (USD per 1M tokens),
   including an optional discounted cache-read price. Intended as a savings tracker,
   not billing.

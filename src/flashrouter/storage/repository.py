@@ -579,11 +579,20 @@ class Repository:
         key_id: int | None,
         key_name: str | None,
         stream: bool,
+        endpoint: str = "chat/completions",
     ) -> None:
         await self._write(
             "INSERT INTO requests(request_id, created_at, key_id, key_name, "
-            "requested_model, stream) VALUES (?,?,?,?,?,?)",
-            (request_id, now_iso(), key_id, key_name, requested_model, int(stream)),
+            "requested_model, stream, endpoint) VALUES (?,?,?,?,?,?,?)",
+            (
+                request_id,
+                now_iso(),
+                key_id,
+                key_name,
+                requested_model,
+                int(stream),
+                endpoint,
+            ),
         )
 
     async def finish_request(self, request_id: str, fields: dict[str, Any]) -> None:
@@ -680,6 +689,7 @@ class Repository:
         status: str | None = None,
         model: str | None = None,
         key_id: int | None = None,
+        endpoint: str | None = None,
     ) -> dict[str, Any]:
         clauses = []
         params: list[Any] = []
@@ -692,6 +702,9 @@ class Repository:
         if key_id is not None:
             clauses.append("key_id=?")
             params.append(key_id)
+        if endpoint:
+            clauses.append("endpoint=?")
+            params.append(endpoint)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         total_row = await self._fetchone(
             f"SELECT COUNT(*) AS n FROM requests {where}", tuple(params)
@@ -798,7 +811,7 @@ class Repository:
         )
         recent = await self._fetchall(
             "SELECT request_id, created_at, requested_model, resolved_provider, "
-            "resolved_model, status, http_status, input_tokens, output_tokens, "
+            "resolved_model, endpoint, status, http_status, input_tokens, output_tokens, "
             "cache_read_tokens, cache_write_tokens, cost, duration_ms "
             "FROM requests ORDER BY id DESC LIMIT 10"
         )

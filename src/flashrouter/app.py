@@ -16,7 +16,7 @@ from flashrouter import __version__
 from flashrouter.api.admin import router as admin_router
 from flashrouter.api.inference import router as inference_router
 from flashrouter.config import Settings, ensure_data_dirs
-from flashrouter.errors import GatewayError, error_body
+from flashrouter.errors import GatewayError, anthropic_error_body, error_body
 from flashrouter.logging import configure_logging, get_logger, new_request_id
 from flashrouter.routing.engine import Router
 from flashrouter.services.engine import Engine
@@ -169,22 +169,34 @@ def create_app(
         request_id = getattr(request.state, "request_id", None)
         if request_id:
             headers["X-FlashRouter-Request-ID"] = request_id
+        if getattr(request.state, "dialect", None) == "anthropic":
+            content = anthropic_error_body(
+                exc.message, status_code=exc.status_code, error_type=exc.type
+            )
+        else:
+            content = error_body(
+                exc.message, error_type=exc.type, code=exc.code, param=exc.param
+            )
         return JSONResponse(
             status_code=exc.status_code,
-            content=error_body(
-                exc.message, error_type=exc.type, code=exc.code, param=exc.param
-            ),
+            content=content,
             headers=headers,
         )
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("unhandled_error")
+        if getattr(request.state, "dialect", None) == "anthropic":
+            content = anthropic_error_body(
+                "Internal gateway error", status_code=500, error_type="server_error"
+            )
+        else:
+            content = error_body(
+                "Internal gateway error", error_type="server_error", code="internal_error"
+            )
         return JSONResponse(
             status_code=500,
-            content=error_body(
-                "Internal gateway error", error_type="server_error", code="internal_error"
-            ),
+            content=content,
         )
 
     app.include_router(inference_router)

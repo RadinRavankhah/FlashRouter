@@ -152,7 +152,10 @@ def _normalize_base_url(base_url: str) -> str:
 async def _probe_models(request: Request, provider: dict[str, Any], secret: str | None):
     client = request.app.state.http_client
     url = join_url(provider["base_url"], "models")
-    headers = build_upstream_headers(provider.get("headers"), secret, stream=False)
+    dialect = "anthropic" if provider.get("protocol") == "anthropic-messages" else None
+    headers = build_upstream_headers(
+        provider.get("headers"), secret, stream=False, dialect=dialect
+    )
     headers["Accept"] = "application/json"
     try:
         response = await client.get(url, headers=headers)
@@ -234,12 +237,14 @@ async def create_provider(request: Request, payload: ProviderIn) -> dict[str, An
     repo = _repo(request)
     base_url = payload.base_url
     preset = payload.preset
+    protocol = payload.protocol
     if preset != "custom":
         preset_data = get_preset(preset)
         if preset_data is None:
             raise bad_request(f"Unknown provider preset '{preset}'", param="preset")
         if not base_url:
             base_url = preset_data["base_url"]
+        protocol = preset_data.get("protocol", protocol)
     base_url = _normalize_base_url(base_url)
     if not base_url:
         raise bad_request("base_url is required", param="base_url")
@@ -247,7 +252,7 @@ async def create_provider(request: Request, payload: ProviderIn) -> dict[str, An
         name=payload.name.strip() or "Provider",
         base_url=base_url,
         preset=preset,
-        protocol=payload.protocol,
+        protocol=protocol,
         headers=payload.headers,
         enabled=payload.enabled,
         priority=payload.priority,
@@ -554,10 +559,16 @@ async def list_requests(
     status: str | None = None,
     model: str | None = None,
     key_id: int | None = None,
+    endpoint: str | None = None,
 ) -> dict[str, Any]:
     limit = max(1, min(limit, 500))
     return await _repo(request).list_requests(
-        limit=limit, offset=max(0, offset), status=status, model=model, key_id=key_id
+        limit=limit,
+        offset=max(0, offset),
+        status=status,
+        model=model,
+        key_id=key_id,
+        endpoint=endpoint,
     )
 
 

@@ -15,6 +15,7 @@ export interface Preset {
   id: string;
   name: string;
   base_url: string;
+  protocol?: string;
   local: boolean;
   docs: string;
 }
@@ -83,6 +84,7 @@ export interface RequestSummary {
   requested_model: string;
   resolved_provider: string | null;
   resolved_model: string | null;
+  endpoint: string;
   status: string;
   http_status: number | null;
   input_tokens: number | null;

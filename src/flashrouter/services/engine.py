@@ -19,7 +19,13 @@ from flashrouter.errors import (
 from flashrouter.logging import get_logger
 from flashrouter.routing.engine import Candidate, Router, order_accounts
 from flashrouter.savers.rtk import apply_token_saver
-from flashrouter.services.usage import Usage, estimate_cost, extract_usage, usage_from_sse_line
+from flashrouter.services.usage import (
+    Usage,
+    estimate_cost,
+    extract_usage,
+    merge_usage,
+    usage_from_sse_line,
+)
 from flashrouter.storage.repository import Repository
 from flashrouter.transport.headers import (
     build_upstream_headers,
@@ -59,14 +65,35 @@ def _classify(status: int) -> tuple[bool, bool, str]:
     return (False, False, "ok")
 
 
+def _upstream_message(text: str, dialect: str | None, status: int) -> str:
+    """Extract a human-readable message from an upstream error body."""
+    if not text:
+        return f"Upstream returned HTTP {status}"
+    if dialect == "anthropic":
+        try:
+            payload = json.loads(text)
+        except (ValueError, TypeError):
+            payload = None
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict) and isinstance(error.get("message"), str):
+                return error["message"][:1000]
+    return text[:1000]
+
+
 class _SseAccumulator:
-    """Best-effort incremental SSE parser for usage and assistant text."""
+    """Best-effort incremental SSE parser for usage and assistant text.
+
+    Handles both OpenAI ``choices[].delta`` streams and Anthropic Messages
+    events (``message_start``, ``content_block_delta``, ``message_delta``).
+    """
 
     def __init__(self) -> None:
         self._buffer = ""
         self.text = ""
         self.usage: Usage = Usage()
         self.finish_reason: str | None = None
+        self.stream_error: str | None = None
         self._truncated = False
 
     def feed(self, chunk: bytes) -> None:
@@ -78,7 +105,7 @@ class _SseAccumulator:
     def _handle_line(self, line: str) -> None:
         usage = usage_from_sse_line(line)
         if usage:
-            self.usage = usage
+            self.usage = merge_usage(self.usage, usage)
         stripped = line.strip()
         if not stripped.startswith("data:"):
             return
@@ -91,18 +118,56 @@ class _SseAccumulator:
             return
         if not isinstance(payload, dict):
             return
+        self._handle_openai(payload)
+        self._handle_anthropic(payload)
+
+    def _append_text(self, text: str) -> None:
+        if not text or self._truncated:
+            return
+        self.text += text
+        if len(self.text) >= STREAM_CAPTURE_LIMIT:
+            self._truncated = True
+
+    def _handle_openai(self, payload: dict[str, Any]) -> None:
         choices = payload.get("choices")
-        if isinstance(choices, list) and choices:
-            choice = choices[0]
-            if isinstance(choice, dict):
-                if choice.get("finish_reason"):
-                    self.finish_reason = str(choice["finish_reason"])
-                delta = choice.get("delta")
-                if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-                    if not self._truncated:
-                        self.text += delta["content"]
-                        if len(self.text) >= STREAM_CAPTURE_LIMIT:
-                            self._truncated = True
+        if not isinstance(choices, list) or not choices:
+            return
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            return
+        if choice.get("finish_reason"):
+            self.finish_reason = str(choice["finish_reason"])
+        delta = choice.get("delta")
+        if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+            self._append_text(delta["content"])
+
+    def _handle_anthropic(self, payload: dict[str, Any]) -> None:
+        event_type = payload.get("type")
+        if event_type == "message_start":
+            message = payload.get("message")
+            if isinstance(message, dict):
+                self.usage = merge_usage(self.usage, extract_usage(message))
+                if message.get("stop_reason"):
+                    self.finish_reason = str(message["stop_reason"])
+        elif event_type == "content_block_delta":
+            delta = payload.get("delta")
+            if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                text = delta.get("text")
+                if isinstance(text, str):
+                    self._append_text(text)
+        elif event_type == "message_delta":
+            delta = payload.get("delta")
+            if isinstance(delta, dict) and delta.get("stop_reason"):
+                self.finish_reason = str(delta["stop_reason"])
+            if payload.get("usage") is not None:
+                self.usage = merge_usage(self.usage, extract_usage(payload))
+        elif event_type == "error":
+            error = payload.get("error")
+            if isinstance(error, dict) and error.get("message"):
+                self.stream_error = str(error["message"])
+            else:
+                self.stream_error = "Upstream stream error"
+
 
 
 class Engine:
@@ -130,6 +195,10 @@ class Engine:
         endpoint: str = "chat/completions",
         stream: bool = False,
         token_saver: bool | None = None,
+        dialect: str | None = None,
+        incoming_headers: dict[str, str] | None = None,
+        query: str = "",
+        record_usage: bool = True,
     ) -> Response:
         started = time.perf_counter()
         requested_model = str(body.get("model", "") or "")
@@ -142,6 +211,7 @@ class Engine:
             key_id=key_id,
             key_name=key_name,
             stream=stream,
+            endpoint=endpoint,
         )
         await self._repo.add_payload(request_id=request_id, kind="incoming", body=_dump(body))
 
@@ -195,6 +265,10 @@ class Engine:
                         started=started,
                         key_id=key_id,
                         token_saver=token_saver,
+                        dialect=dialect,
+                        incoming_headers=incoming_headers,
+                        query=query,
+                        record_usage=record_usage,
                     )
                 except GatewayError as exc:
                     last_error = exc
@@ -233,6 +307,10 @@ class Engine:
         started: float,
         key_id: int | None,
         token_saver: bool | None,
+        dialect: str | None,
+        incoming_headers: dict[str, str] | None,
+        query: str,
+        record_usage: bool,
     ) -> Response | None:
         outbound = dict(body)
         outbound["model"] = candidate.model
@@ -249,8 +327,14 @@ class Engine:
             body=_dump(outbound),
         )
 
-        url = join_url(candidate.base_url, endpoint)
-        headers = build_upstream_headers(candidate.headers, account.get("secret"), stream=stream)
+        url = join_url(candidate.base_url, endpoint, query)
+        headers = build_upstream_headers(
+            candidate.headers,
+            account.get("secret"),
+            stream=stream,
+            dialect=dialect,
+            incoming=incoming_headers,
+        )
         try:
             request = httpx.Request(
                 "POST",
@@ -271,7 +355,7 @@ class Engine:
                 text = (await response.aread()).decode("utf-8", errors="replace")
                 await response.aclose()
                 await self._handle_http_error(
-                    response.status_code, text, candidate, account, attempt_id
+                    response.status_code, text, candidate, account, attempt_id, dialect
                 )
                 return None
             return self._stream_response(
@@ -286,13 +370,14 @@ class Engine:
                 price_in=price_in,
                 price_out=price_out,
                 price_cache_in=price_cache_in,
+                record_usage=record_usage,
             )
 
         response = await self._client.send(request)
         if response.status_code >= 400:
             text = response.content.decode("utf-8", errors="replace")
             await self._handle_http_error(
-                response.status_code, text, candidate, account, attempt_id
+                response.status_code, text, candidate, account, attempt_id, dialect
             )
             return None
 
@@ -324,14 +409,15 @@ class Engine:
                 "cost": cost,
             },
         )
-        await self._record_usage(
-            request_id=request_id,
-            candidate=candidate,
-            account=account,
-            key_id=key_id,
-            usage=usage,
-            cost=cost,
-        )
+        if record_usage:
+            await self._record_usage(
+                request_id=request_id,
+                candidate=candidate,
+                account=account,
+                key_id=key_id,
+                usage=usage,
+                cost=cost,
+            )
         await self._repo.finish_request(
             request_id,
             {
@@ -372,9 +458,10 @@ class Engine:
         candidate: Candidate,
         account: dict[str, Any],
         attempt_id: int,
+        dialect: str | None = None,
     ) -> None:
         retryable, cooldown, error_type = _classify(status)
-        message = text[:1000] if text else f"Upstream returned HTTP {status}"
+        message = _upstream_message(text, dialect, status)
         if cooldown:
             await self._repo.cooldown_account(
                 account["id"], int(account.get("cooldown_seconds", 60)), message
@@ -407,6 +494,7 @@ class Engine:
         price_in: float,
         price_out: float,
         price_cache_in: float | None,
+        record_usage: bool = True,
     ) -> StreamingResponse:
         async def iterator():
             accumulator = _SseAccumulator()
@@ -425,6 +513,9 @@ class Engine:
                 self._logger.warning("stream_error id=%s %s", request_id, error_message)
             finally:
                 await response.aclose()
+                if accumulator.stream_error:
+                    status = "error"
+                    error_message = accumulator.stream_error
                 usage = accumulator.usage
                 cost = estimate_cost(
                     price_in=price_in,
@@ -467,7 +558,7 @@ class Engine:
                         "cost": cost,
                     },
                 )
-                if status == "success":
+                if status == "success" and record_usage:
                     await self._record_usage(
                         request_id=request_id,
                         candidate=candidate,

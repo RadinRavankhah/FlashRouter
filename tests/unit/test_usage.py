@@ -1,7 +1,10 @@
+import json
+
 from flashrouter.services.usage import (
     Usage,
     estimate_cost,
     extract_usage,
+    merge_usage,
     usage_from_sse_line,
 )
 
@@ -86,3 +89,31 @@ def test_usage_from_sse_line():
         'data: {"usage": {"prompt_tokens": 1, "completion_tokens": 2}}'
     ) == Usage(input_tokens=1, output_tokens=2)
     assert usage_from_sse_line("data: [DONE]") is None
+
+
+def test_extract_usage_anthropic_message_start():
+    payload = {
+        "type": "message_start",
+        "message": {
+            "usage": {
+                "input_tokens": 4,
+                "output_tokens": 1,
+                "cache_read_input_tokens": 6,
+            }
+        },
+    }
+    assert extract_usage(payload) == Usage(
+        input_tokens=10, output_tokens=1, cache_read_tokens=6
+    )
+    assert usage_from_sse_line(f"data: {json.dumps(payload)}") == Usage(
+        input_tokens=10, output_tokens=1, cache_read_tokens=6
+    )
+
+
+def test_merge_usage_keeps_input_and_updates_output():
+    first = Usage(input_tokens=10, output_tokens=1, cache_read_tokens=4)
+    second = Usage(output_tokens=7)
+    assert merge_usage(first, second) == Usage(
+        input_tokens=10, output_tokens=7, cache_read_tokens=4
+    )
+

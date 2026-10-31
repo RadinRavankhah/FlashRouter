@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from flashrouter import __version__
 
 USER_AGENT = f"FlashRouter/{__version__}"
+DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -46,12 +47,35 @@ def build_upstream_headers(
     secret: str | None,
     *,
     stream: bool,
+    dialect: str | None = None,
+    incoming: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
+    """Build outbound headers.
+
+    ``dialect="anthropic"`` is used for the mirrored ``/v1/messages`` API. It
+    forwards the client's ``anthropic-version``/``anthropic-beta`` headers and
+    sends the account secret as both ``x-api-key`` and ``Authorization`` so the
+    same provider entry works with native Anthropic (x-api-key) and
+    Anthropic-compatible aggregators (Bearer).
+    """
     headers: dict[str, str] = {}
+    lowered: set[str] = set()
     for name, value in (extra_headers or {}).items():
         if name.lower() in CLIENT_FORBIDDEN_HEADERS:
             continue
         headers[name] = value
+        lowered.add(name.lower())
+
+    # Client headers are only forwarded from a small allowlist. Provider
+    # configuration wins over anything the client sent.
+    for name, value in (incoming or {}).items():
+        lowered_name = name.lower()
+        if lowered_name in CLIENT_FORBIDDEN_HEADERS or lowered_name == "x-api-key":
+            continue
+        if lowered_name in lowered:
+            continue
+        headers[name] = value
+        lowered.add(lowered_name)
 
     headers["Content-Type"] = "application/json"
     headers["Accept"] = "text/event-stream" if stream else "application/json"
@@ -60,6 +84,11 @@ def build_upstream_headers(
 
     if secret:
         headers["Authorization"] = f"Bearer {secret}"
+        if dialect == "anthropic":
+            headers["x-api-key"] = secret
+
+    if dialect == "anthropic" and "anthropic-version" not in lowered:
+        headers["anthropic-version"] = DEFAULT_ANTHROPIC_VERSION
 
     return headers
 

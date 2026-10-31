@@ -181,8 +181,13 @@ def _probe(settings: Settings) -> int:
                 accounts = await repo.list_accounts(provider["id"])
                 secret = accounts[0]["secret"] if accounts else None
                 url = join_url(provider["base_url"], "models")
+                dialect = (
+                    "anthropic"
+                    if provider.get("protocol") == "anthropic-messages"
+                    else None
+                )
                 headers = build_upstream_headers(
-                    provider.get("headers"), secret, stream=False
+                    provider.get("headers"), secret, stream=False, dialect=dialect
                 )
                 try:
                     response = await client.get(url, headers=headers)
