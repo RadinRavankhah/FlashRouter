@@ -133,6 +133,7 @@ docs/ROADMAP.md          # this file
 | M6 | README rewrite, tests, ruff + tsc, version bump | done |
 | M7 | Cache read/write token tracking, cache-aware pricing, Models page | done |
 | M8 | Anthropic Messages pass-through (`/v1/messages`, `count_tokens`), presets, hybrid models | done |
+| M9 | Prompt-cache injection, key/provider cache policy, cache affinity, cache-write pricing | done |
 
 ## Definition of done
 
@@ -143,7 +144,7 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
 
 ## Status
 
-- **Phase:** M0–M8 complete.
+- **Phase:** M0–M9 complete.
 - **Working now:**
   - New core package (config, storage/migrations, repository, providers presets,
     router, engine, RTK saver, usage).
@@ -156,14 +157,20 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   - Full admin API + redesigned React dashboard (built into `ui/dist`).
   - Cache read/write token tracking, per-model pricing (including cache-read price)
     and a Models page with search, provider filtering, and pagination.
+  - Automatic Anthropic `cache_control` injection (system/tools/assistant/final tool
+    results, four-breakpoint budget), provider cache-marker capability, per-key
+    cache policy/TTL, cache-aware account affinity, and cache-write pricing
+    (schema v5: `providers.cache_markers/cache_ttl`, `keys.cache_policy/cache_ttl`,
+    `models.price_cache_write`).
   - Provider discovery imports model prices when the upstream `/models` payload
     includes them.
   - CLI: run/doctor/backup/restore/reset-admin/version/open + bootstrap launchers.
-  - 59 tests passing; ruff clean; `ui` builds.
+  - 77 tests passing; ruff clean; `ui` builds.
 - **Known gaps / next:**
   - Add more tests (cooldown, admin CRUD, RTK edge cases, restore CLI).
   - No chat↔messages translation; `/v1/responses` and `/v1/messages` are
     pass-through only.
+  - Cache affinity is in-memory (10-minute TTL); it resets when the process restarts.
   - Version now `0.4.0`; bump to `1.0.0` when accepted.
 
 ## Changelog
@@ -208,3 +215,10 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   `client_disconnect`, transport failures fall back to the next target and are
   recorded, and startup recovery backfills interrupted rows from their successful
   attempt instead of leaving them empty (59 tests).
+- (session 8) Prompt caching for any client, any provider. Added
+  `services/caching.py` (Anthropic breakpoint anchoring with a four-marker budget,
+  OpenAI-shaped system/assistant markers, strip/passthrough modes), provider
+  `cache_markers`/`cache_ttl`, per-key `cache_policy`/`cache_ttl`, the
+  `x-flashrouter-cache` override, cache-aware account affinity (10-minute
+  conversation pinning), RTK skipped while injection is active, and
+  `models.price_cache_write` with a 1.25× input default. Schema v5; 77 tests.

@@ -40,3 +40,6 @@ Windows PowerShell uses `& .venv\Scripts\pytest.exe -q` etc.
 - Fall back to another target only **before** any bytes are streamed to the client.
 - Cost values are estimates, not billing. Cost uses per-model input/output prices
   plus an optional discounted `price_cache_in`; cache tokens are subsets of input.
+- Prompt caching: Anthropic needs `cache_control` markers (injected by
+  `services/caching.py`); DeepSeek/OpenAI/Gemini cache automatically. Never inject
+  markers into a provider unless its `cache_markers` capability allows it.
