@@ -177,7 +177,7 @@ def test_key_policy_force_injects_for_openai_provider(settings: Path):
         assert body["messages"][2]["content"][0]["cache_control"] == CC
 
 
-def test_openai_provider_is_not_injected_by_default(settings: Path):
+def test_openai_provider_uses_automatic_caching_by_default(settings: Path):
     captured: dict[str, dict] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -208,7 +208,93 @@ def test_openai_provider_is_not_injected_by_default(settings: Path):
             },
         )
         assert response.status_code == 200, response.text
+        body = captured["body"]
+        assert _markers(body) == []
+        assert body["prompt_cache_key"].startswith("fr_")
+
+
+def test_openai_cache_can_be_disabled_per_key(settings: Path):
+    captured: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=chat_completion())
+
+    client, _ = build_client(settings, handler)
+    with client:
+        provider = _provider(
+            client,
+            name="chat",
+            base_url="https://chat.test/v1",
+            protocol="openai-chat",
+        )
+        _account(client, provider)
+        _combo(client, provider, model="gpt", name="coding")
+        key = _key(client, cache_policy="off")
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key['token']}"},
+            json={
+                "model": "coding",
+                "messages": [
+                    {"role": "system", "content": "You are an agent."},
+                    {"role": "user", "content": "hi"},
+                ],
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert "prompt_cache_key" not in captured["body"]
         assert _markers(captured["body"]) == []
+
+
+def test_prompt_cache_key_is_retried_without_on_upstream_400(settings: Path):
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "prompt_cache_key" in body:
+            return httpx.Response(
+                400,
+                json={"error": {"message": "Unknown parameter: prompt_cache_key"}},
+            )
+        return httpx.Response(200, json=chat_completion())
+
+    client, _ = build_client(settings, handler)
+    with client:
+        provider = _provider(
+            client,
+            name="chat",
+            base_url="https://chat.test/v1",
+            protocol="openai-chat",
+        )
+        _account(client, provider)
+        _combo(client, provider, model="gpt", name="coding")
+        key = _key(client)
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key['token']}"},
+            json={
+                "model": "coding",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert "prompt_cache_key" in bodies[0]
+        assert "prompt_cache_key" not in bodies[1]
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key['token']}"},
+            json={
+                "model": "coding",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert "prompt_cache_key" not in bodies[2]
 
 
 def test_openai_provider_can_opt_into_anthropic_markers(settings: Path):

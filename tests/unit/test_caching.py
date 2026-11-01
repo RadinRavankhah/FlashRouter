@@ -5,7 +5,9 @@ from flashrouter.services.caching import (
     anchor_anthropic,
     anchor_openai,
     apply_cache_markers,
+    apply_prompt_cache_key,
     cache_marker_count,
+    prompt_cache_key,
     resolve_cache_decision,
     strip_cache_markers,
 )
@@ -14,24 +16,48 @@ CC = {"type": "ephemeral"}
 CC1H = {"type": "ephemeral", "ttl": "1h"}
 
 
-def _decision(*, active=True, strip=False, head="5m", tail="5m") -> CacheDecision:
-    return CacheDecision("force" if active else "off", active, strip, head, tail)
+def _decision(
+    *,
+    active=True,
+    inject=True,
+    strip=False,
+    send_cache_key=False,
+    head="5m",
+    tail="5m",
+) -> CacheDecision:
+    return CacheDecision(
+        "force" if active else "off",
+        active,
+        inject,
+        strip,
+        send_cache_key,
+        head,
+        tail,
+    )
 
 
-def test_resolve_defaults_follow_protocol():
+def test_resolve_defaults_follow_provider_mechanism():
     anth = resolve_cache_decision(
         endpoint="messages",
         provider={"protocol": "anthropic-messages"},
         key={"cache_policy": "auto"},
     )
-    assert anth.active and not anth.strip
+    assert anth.active and anth.inject and not anth.strip
 
     openai = resolve_cache_decision(
         endpoint="chat/completions",
         provider={"protocol": "openai-chat"},
         key={"cache_policy": "auto"},
     )
-    assert not openai.active and openai.strip
+    assert openai.active and not openai.inject
+    assert openai.strip and openai.send_cache_key
+
+    responses = resolve_cache_decision(
+        endpoint="responses",
+        provider={"protocol": "openai-chat"},
+        key={"cache_policy": "auto"},
+    )
+    assert responses.active and not responses.inject and responses.send_cache_key
 
 
 def test_resolve_provider_opt_in_and_key_override():
@@ -40,14 +66,14 @@ def test_resolve_provider_opt_in_and_key_override():
         provider={"protocol": "openai-chat", "cache_markers": "anthropic"},
         key={"cache_policy": "auto"},
     )
-    assert opted_in.active
+    assert opted_in.active and opted_in.inject
 
     forced = resolve_cache_decision(
         endpoint="chat/completions",
         provider={"protocol": "openai-chat", "cache_markers": "none"},
         key={"cache_policy": "force"},
     )
-    assert forced.active
+    assert forced.active and forced.inject
 
     off = resolve_cache_decision(
         endpoint="messages",
@@ -55,7 +81,50 @@ def test_resolve_provider_opt_in_and_key_override():
         key={"cache_policy": "auto"},
         override="off",
     )
-    assert not off.active and off.strip
+    assert not off.active and not off.inject and off.strip
+
+
+def test_prompt_cache_key_is_stable_and_opaque():
+    first = prompt_cache_key("h:abc")
+    assert first == prompt_cache_key("h:abc")
+    assert first != prompt_cache_key("h:def")
+    assert first is not None and first.startswith("fr_") and "abc" not in first
+
+    body = {"messages": [{"role": "user", "content": "hi"}]}
+    decision = resolve_cache_decision(
+        endpoint="chat/completions",
+        provider={"protocol": "openai-chat"},
+        key={"cache_policy": "auto"},
+    )
+    out = apply_prompt_cache_key(body, affinity_key="h:abc", decision=decision)
+    assert out["prompt_cache_key"] == first
+    assert "prompt_cache_key" not in body
+
+
+def test_prompt_cache_key_is_not_added_when_disabled():
+    body = {"messages": [{"role": "user", "content": "hi"}]}
+    decision = resolve_cache_decision(
+        endpoint="chat/completions",
+        provider={"protocol": "openai-chat"},
+        key={"cache_policy": "off"},
+    )
+    assert apply_prompt_cache_key(body, affinity_key="h:abc", decision=decision) is body
+
+
+def test_affinity_ttl_matches_cache_mode():
+    automatic = resolve_cache_decision(
+        endpoint="chat/completions",
+        provider={"protocol": "openai-chat"},
+        key={"cache_policy": "auto"},
+    )
+    assert automatic.affinity_ttl == 15 * 60
+
+    anthropic_1h = resolve_cache_decision(
+        endpoint="messages",
+        provider={"protocol": "anthropic-messages", "cache_ttl": "1h"},
+        key={"cache_policy": "auto"},
+    )
+    assert anthropic_1h.affinity_ttl == 60 * 60
 
 
 def test_anchor_anthropic_marks_system_tools_and_assistant():

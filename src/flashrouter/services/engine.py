@@ -23,7 +23,9 @@ from flashrouter.logging import get_logger
 from flashrouter.routing.engine import Candidate, Router, order_accounts
 from flashrouter.savers.rtk import apply_token_saver
 from flashrouter.services.caching import (
+    CacheDecision,
     apply_cache_markers,
+    apply_prompt_cache_key,
     resolve_cache_decision,
 )
 from flashrouter.services.usage import (
@@ -43,7 +45,15 @@ from flashrouter.transport.urls import join_url
 PAYLOAD_LIMIT = 200_000
 STREAM_CAPTURE_LIMIT = 65_536
 _READ_CHUNK = 65_536
-AFFINITY_TTL_SECONDS = 600
+
+
+def _cache_key_rejected(text: str) -> bool:
+    lowered = text.lower()
+    if "prompt_cache_key" in lowered:
+        return True
+    return ("unknown" in lowered or "unrecognized" in lowered or "extra" in lowered) and (
+        "parameter" in lowered or "field" in lowered
+    )
 
 
 def _dump(value: Any, limit: int = PAYLOAD_LIMIT) -> str:
@@ -243,6 +253,7 @@ class Engine:
         self._logger = get_logger()
         self._rr: dict[int, int] = {}
         self._affinity: dict[str, tuple[float, int, int]] = {}
+        self._cache_key_unsupported: set[int] = set()
 
     # ------------------------------------------------------------------ public
     async def handle(
@@ -297,13 +308,26 @@ class Engine:
 
         try:
             for candidate in candidates:
+                cache_decision = resolve_cache_decision(
+                    endpoint=endpoint,
+                    provider={
+                        "protocol": candidate.protocol,
+                        "cache_markers": candidate.cache_markers,
+                        "cache_ttl": candidate.cache_ttl,
+                    },
+                    key=key,
+                    override=cache_override,
+                )
                 eligible = await self._repo.eligible_accounts(candidate.provider_id)
                 if not eligible:
                     continue
                 counter = self._rr.get(candidate.provider_id, 0)
                 self._rr[candidate.provider_id] = counter + 1
                 accounts = order_accounts(eligible, counter)
-                accounts = self._pin_account(accounts, candidate.provider_id, affinity_key)
+                if cache_decision.active:
+                    accounts = self._pin_account(
+                        accounts, candidate.provider_id, affinity_key
+                    )
 
                 for account in accounts:
                     attempts += 1
@@ -333,9 +357,8 @@ class Engine:
                             incoming_headers=incoming_headers,
                             query=query,
                             record_usage=record_usage,
-                            cache_override=cache_override,
+                            cache_decision=cache_decision,
                             affinity_key=affinity_key,
-                            key=key,
                         )
                     except GatewayError as exc:
                         last_error = exc
@@ -414,21 +437,9 @@ class Engine:
         incoming_headers: dict[str, str] | None,
         query: str,
         record_usage: bool,
-        cache_override: str | None = None,
+        cache_decision: CacheDecision,
         affinity_key: str | None = None,
-        key: dict[str, Any] | None = None,
     ) -> Response | None:
-        provider_cache = {
-            "protocol": candidate.protocol,
-            "cache_markers": candidate.cache_markers,
-            "cache_ttl": candidate.cache_ttl,
-        }
-        cache_decision = resolve_cache_decision(
-            endpoint=endpoint,
-            provider=provider_cache,
-            key=key,
-            override=cache_override,
-        )
         outbound = dict(body)
         outbound["model"] = candidate.model
         saver_enabled = (
@@ -437,12 +448,24 @@ class Engine:
         if (
             endpoint == "chat/completions"
             and saver_enabled
-            and not cache_decision.active
+            and not cache_decision.inject
         ):
             outbound = apply_token_saver(outbound)
         outbound = apply_cache_markers(
             outbound, endpoint=endpoint, decision=cache_decision
         )
+        outbound = apply_prompt_cache_key(
+            outbound, affinity_key=affinity_key, decision=cache_decision
+        )
+        cache_key_added = (
+            "prompt_cache_key" in outbound and "prompt_cache_key" not in body
+        )
+        if (
+            cache_key_added
+            and candidate.provider_id in self._cache_key_unsupported
+        ):
+            outbound.pop("prompt_cache_key", None)
+            cache_key_added = False
 
         await self._repo.add_payload(
             request_id=request_id,
@@ -459,36 +482,70 @@ class Engine:
             dialect=dialect,
             incoming=incoming_headers,
         )
-        try:
-            request = httpx.Request(
-                "POST",
-                url,
-                headers=headers,
-                content=json.dumps(outbound, ensure_ascii=False).encode("utf-8"),
+
+        def build_request(payload: dict[str, Any]) -> httpx.Request:
+            try:
+                return httpx.Request(
+                    "POST",
+                    url,
+                    headers=headers,
+                    content=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                )
+            except (TypeError, ValueError) as exc:
+                raise upstream_error(502, f"Could not encode request: {exc}") from exc
+
+        async def send_with_fallback(
+            payload: dict[str, Any],
+        ) -> tuple[httpx.Response, str | None]:
+            request = build_request(payload)
+            response = await self._client.send(request, stream=stream)
+            if response.status_code != 400 or not cache_key_added:
+                return response, None
+            if stream:
+                text = (await response.aread()).decode("utf-8", errors="replace")
+                await response.aclose()
+            else:
+                text = response.content.decode("utf-8", errors="replace")
+            if not _cache_key_rejected(text):
+                return response, text
+            self._cache_key_unsupported.add(candidate.provider_id)
+            payload.pop("prompt_cache_key", None)
+            await self._repo.add_payload(
+                request_id=request_id,
+                attempt_n=attempt_n,
+                kind="outgoing",
+                body=_dump(payload),
             )
-        except (TypeError, ValueError) as exc:
-            raise upstream_error(502, f"Could not encode request: {exc}") from exc
+            return await self._client.send(build_request(payload), stream=stream), None
 
         price_in, price_out, price_cache_in, price_cache_write = (
             await self._repo.get_model_price(candidate.provider_id, candidate.model)
         )
-        cache_pin = cache_decision.active or (
-            price_cache_in is not None and price_cache_in < price_in
-        )
+        cache_pin = cache_decision.active
+
+        response, error_text = await send_with_fallback(outbound)
+        if response.status_code >= 400:
+            if error_text is None:
+                if stream:
+                    error_text = (await response.aread()).decode(
+                        "utf-8", errors="replace"
+                    )
+                    await response.aclose()
+                else:
+                    error_text = response.content.decode("utf-8", errors="replace")
+            await self._handle_http_error(
+                response.status_code, error_text, candidate, account, attempt_id, dialect
+            )
+            return None
+        if cache_pin and affinity_key:
+            self._remember_affinity(
+                affinity_key,
+                candidate.provider_id,
+                account["id"],
+                cache_decision.affinity_ttl,
+            )
 
         if stream:
-            response = await self._client.send(request, stream=True)
-            if response.status_code >= 400:
-                text = (await response.aread()).decode("utf-8", errors="replace")
-                await response.aclose()
-                await self._handle_http_error(
-                    response.status_code, text, candidate, account, attempt_id, dialect
-                )
-                return None
-            if cache_pin and affinity_key:
-                self._remember_affinity(
-                    affinity_key, candidate.provider_id, account["id"]
-                )
             return self._stream_response(
                 response=response,
                 candidate=candidate,
@@ -503,18 +560,6 @@ class Engine:
                 price_cache_in=price_cache_in,
                 price_cache_write=price_cache_write,
                 record_usage=record_usage,
-            )
-
-        response = await self._client.send(request)
-        if response.status_code >= 400:
-            text = response.content.decode("utf-8", errors="replace")
-            await self._handle_http_error(
-                response.status_code, text, candidate, account, attempt_id, dialect
-            )
-            return None
-        if cache_pin and affinity_key:
-            self._remember_affinity(
-                affinity_key, candidate.provider_id, account["id"]
             )
 
         content = response.content
@@ -846,10 +891,14 @@ class Engine:
         return accounts
 
     def _remember_affinity(
-        self, affinity_key: str, provider_id: int, account_id: int
+        self,
+        affinity_key: str,
+        provider_id: int,
+        account_id: int,
+        ttl_seconds: int,
     ) -> None:
         self._affinity[affinity_key] = (
-            time.monotonic() + AFFINITY_TTL_SECONDS,
+            time.monotonic() + ttl_seconds,
             provider_id,
             account_id,
         )

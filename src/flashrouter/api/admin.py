@@ -217,6 +217,7 @@ async def _probe_models(request: Request, provider: dict[str, Any], secret: str 
                             "price_in": pricing.price_in,
                             "price_out": pricing.price_out,
                             "price_cache_in": pricing.price_cache_in,
+                            "price_cache_write": pricing.price_cache_write,
                         }
                     )
         except Exception:  # noqa: BLE001
@@ -362,6 +363,7 @@ async def discover_models(request: Request, provider_id: int) -> dict[str, Any]:
             price_in=model["price_in"],
             price_out=model["price_out"],
             price_cache_in=model["price_cache_in"],
+            price_cache_write=model["price_cache_write"],
         )
         if model["price_in"] is not None and model["price_out"] is not None:
             priced += 1

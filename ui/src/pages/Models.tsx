@@ -274,7 +274,7 @@ export default function Models() {
                       </td>
                       <td className={model.price_cache_write === null ? "muted" : ""}>
                         {model.price_cache_write === null
-                          ? "1.25× input"
+                          ? "2x input"
                           : price(model.price_cache_write)}
                       </td>
                       <td className="muted">{model.source}</td>
@@ -405,7 +405,7 @@ export default function Models() {
             </Field>
             <Field
               label="Cache-write price (USD per 1M tokens)"
-              hint="Leave blank to bill cache writes at 1.25× the input price (Anthropic 5-minute rate)."
+              hint="Leave blank to bill cache writes at 2x the input price."
             >
               <input
                 type="number"
@@ -415,7 +415,7 @@ export default function Models() {
                 onChange={(event) =>
                   setForm({ ...form, price_cache_write: event.target.value })
                 }
-                placeholder="1.25× input"
+                placeholder="2x input"
               />
             </Field>
             <p className="muted" style={{ fontSize: 12 }}>

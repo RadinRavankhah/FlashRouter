@@ -84,10 +84,10 @@ def test_estimate_cost_falls_back_to_input_price():
     assert cost == 1.0
 
 
-def test_estimate_cost_bills_cache_writes_at_125x_by_default():
+def test_estimate_cost_bills_cache_writes_at_2x_by_default():
     usage = Usage(input_tokens=1_000_000, output_tokens=0, cache_write_tokens=1_000_000)
     cost = estimate_cost(price_in=1.0, price_out=2.0, usage=usage)
-    assert cost == 1.25
+    assert cost == 2.0
 
 
 def test_estimate_cost_uses_explicit_cache_write_price():

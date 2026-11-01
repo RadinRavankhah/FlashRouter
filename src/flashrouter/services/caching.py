@@ -20,6 +20,7 @@ capped at four instead of being rewritten.
 from __future__ import annotations
 
 import copy
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,17 +36,30 @@ TTL_5M = "5m"
 TTL_1H = "1h"
 
 _ANTHROPIC_ENDPOINTS = {"messages"}
-_CACHEABLE_ENDPOINTS = {"messages", "chat/completions"}
+_OPENAI_MARKER_ENDPOINTS = {"chat/completions"}
+_PROMPT_KEY_ENDPOINTS = {"chat/completions", "responses"}
+_CACHEABLE_ENDPOINTS = {"messages", *_PROMPT_KEY_ENDPOINTS}
 _THINKING_BLOCKS = {"thinking", "redacted_thinking"}
+
+AFFINITY_TTL_SECONDS = 15 * 60
+AFFINITY_TTL_1H_SECONDS = 60 * 60
 
 
 @dataclass(frozen=True)
 class CacheDecision:
     mode: str
     active: bool
+    inject: bool
     strip: bool
+    send_cache_key: bool
     head_ttl: str
     tail_ttl: str
+
+    @property
+    def affinity_ttl(self) -> int:
+        if self.inject and self.head_ttl == TTL_1H:
+            return AFFINITY_TTL_1H_SECONDS
+        return AFFINITY_TTL_SECONDS
 
 
 def normalize_ttl(value: Any) -> str:
@@ -60,14 +74,15 @@ def resolve_cache_decision(
     key: dict[str, Any] | None,
     override: str | None = None,
 ) -> CacheDecision:
-    """Resolve whether this attempt should inject, pass through, or strip markers.
+    """Resolve the cache behavior for one attempt.
 
     Priority: request header override -> API key policy -> provider capability.
-    ``auto`` means "use Anthropic breakpoints for Anthropic-protocol providers,
-    strip them elsewhere".
+    ``auto`` is cache-optimized for every target: explicit markers for
+    Anthropic-capable providers, and routing hints/affinity for providers that
+    cache automatically. ``off`` strips markers and disables all optimizations.
     """
     if endpoint not in _CACHEABLE_ENDPOINTS:
-        return CacheDecision(OFF, False, False, TTL_5M, TTL_5M)
+        return CacheDecision(OFF, False, False, False, False, TTL_5M, TTL_5M)
 
     policy = str(override or "").strip().lower()
     if policy not in MODES:
@@ -81,20 +96,53 @@ def resolve_cache_decision(
     ttl = normalize_ttl(
         (key or {}).get("cache_ttl") or (provider or {}).get("cache_ttl")
     )
-
-    if policy == AUTO:
-        if markers == "none":
-            policy = OFF
-        elif markers == "anthropic":
-            policy = FORCE
-        elif str((provider or {}).get("protocol") or "") == "anthropic-messages":
-            policy = FORCE
-        else:
-            policy = OFF
+    protocol = str((provider or {}).get("protocol") or "")
+    anthropic = protocol == "anthropic-messages"
+    prompt_key = endpoint in _PROMPT_KEY_ENDPOINTS
 
     if policy == OFF:
-        return CacheDecision(OFF, False, True, ttl, TTL_5M)
-    return CacheDecision(policy, True, False, ttl, TTL_5M)
+        return CacheDecision(OFF, False, False, True, False, ttl, TTL_5M)
+
+    if policy == FORCE:
+        return CacheDecision(
+            FORCE, True, True, False, prompt_key and not anthropic, ttl, TTL_5M
+        )
+
+    inject = markers == "anthropic" or (markers != "none" and anthropic)
+    return CacheDecision(
+        AUTO,
+        True,
+        inject,
+        not inject,
+        prompt_key and not anthropic and markers != "none",
+        ttl,
+        TTL_5M,
+    )
+
+
+def prompt_cache_key(affinity_key: str | None) -> str | None:
+    """Return a stable, opaque ``prompt_cache_key`` for a conversation."""
+    if not affinity_key:
+        return None
+    digest = hashlib.sha256(affinity_key.encode("utf-8")).hexdigest()[:40]
+    return f"fr_{digest}"
+
+
+def apply_prompt_cache_key(
+    body: dict[str, Any],
+    *,
+    affinity_key: str | None,
+    decision: CacheDecision,
+) -> dict[str, Any]:
+    """Attach a stable prompt-cache routing hint when caching is enabled."""
+    if not decision.send_cache_key or body.get("prompt_cache_key"):
+        return body
+    cache_key = prompt_cache_key(affinity_key)
+    if not cache_key:
+        return body
+    result = dict(body)
+    result["prompt_cache_key"] = cache_key
+    return result
 
 
 def apply_cache_markers(
@@ -103,11 +151,13 @@ def apply_cache_markers(
     """Return the body to send upstream, with markers applied or removed."""
     if decision.strip:
         return strip_cache_markers(body)
-    if not decision.active:
+    if not decision.inject:
         return body
     if endpoint in _ANTHROPIC_ENDPOINTS:
         return anchor_anthropic(body, decision)
-    return anchor_openai(body, decision)
+    if endpoint in _OPENAI_MARKER_ENDPOINTS:
+        return anchor_openai(body, decision)
+    return body
 
 
 def _cache_control(ttl: str) -> dict[str, str]:

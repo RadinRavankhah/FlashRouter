@@ -22,6 +22,14 @@ _CACHE_KEYS = (
     "cache_read_price",
     "input_cache_read_price",
 )
+_CACHE_WRITE_KEYS = (
+    "input_cache_write",
+    "cache_write",
+    "cache_write_input",
+    "cache_write_price",
+    "input_cache_write_price",
+    "cache_creation_input",
+)
 _OPENROUTER_KEYS = {"prompt", "completion", "input_cache_read"}
 _PER_TOKEN_THRESHOLD = 0.001
 
@@ -30,6 +38,7 @@ class ModelPricing(NamedTuple):
     price_in: float | None
     price_out: float | None
     price_cache_in: float | None
+    price_cache_write: float | None
 
 
 def _number(value: Any) -> float | None:
@@ -77,9 +86,10 @@ def extract_model_pricing(item: dict[str, Any]) -> ModelPricing:
     input_key, price_in = _lookup(pricing, _INPUT_KEYS)
     output_key, price_out = _lookup(pricing, _OUTPUT_KEYS)
     _, price_cache_in = _lookup(pricing, _CACHE_KEYS)
+    _, price_cache_write = _lookup(pricing, _CACHE_WRITE_KEYS)
 
     if price_in is None and price_out is None:
-        return ModelPricing(None, None, None)
+        return ModelPricing(None, None, None, None)
 
     values = [value for value in (price_in, price_out) if value is not None]
     multiplier = 1_000_000 if _is_per_token(input_key, output_key, values) else 1
@@ -87,4 +97,5 @@ def extract_model_pricing(item: dict[str, Any]) -> ModelPricing:
         _scale(price_in, multiplier),
         _scale(price_out, multiplier),
         _scale(price_cache_in, multiplier),
+        _scale(price_cache_write, multiplier),
     )

@@ -129,6 +129,7 @@ def test_discover_imports_prices_and_preserves_manual_edits(settings: Path):
             "prompt": "0.0000025",
             "completion": "0.00001",
             "input_cache_read": "0.00000125",
+            "input_cache_write": "0.000005",
         },
         "free/model": {"prompt": "0", "completion": "0"},
     }
@@ -167,6 +168,7 @@ def test_discover_imports_prices_and_preserves_manual_edits(settings: Path):
         assert gpt["price_in"] == pytest.approx(2.5)
         assert gpt["price_out"] == pytest.approx(10.0)
         assert gpt["price_cache_in"] == pytest.approx(1.25)
+        assert gpt["price_cache_write"] == pytest.approx(5.0)
 
         client.put(
             f"/admin/api/models/{gpt['id']}",

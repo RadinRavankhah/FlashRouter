@@ -79,10 +79,10 @@ function CreateKeyModal({
       <div className="row">
         <Field
           label="Prompt caching"
-          hint="Force injects Anthropic cache breakpoints; off avoids cache-write costs for one-off chats."
+          hint="Auto uses explicit markers when supported, otherwise provider automatic caching. Off disables FlashRouter's cache hints and affinity."
         >
           <select value={cachePolicy} onChange={(event) => setCachePolicy(event.target.value)}>
-            <option value="auto">Auto (follow provider)</option>
+            <option value="auto">Auto (recommended)</option>
             <option value="force">Force inject</option>
             <option value="off">Off</option>
           </select>

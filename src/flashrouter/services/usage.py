@@ -117,11 +117,11 @@ def estimate_cost(
     """Estimated USD cost using price per 1M tokens (0 means unknown).
 
     Cache reads are billed at ``price_cache_in`` (falling back to ``price_in``
-    when not configured). Cache writes default to Anthropic's 1.25x 5-minute
-    write rate unless the model sets an explicit ``price_cache_write``.
+    when not configured). Cache writes use ``price_cache_write`` when set,
+    otherwise twice ``price_in``.
     """
     cache_price = price_in if price_cache_in is None else price_cache_in
-    write_price = price_in * 1.25 if price_cache_write is None else price_cache_write
+    write_price = price_in * 2.0 if price_cache_write is None else price_cache_write
     cost = (
         usage.uncached_input_tokens * price_in
         + usage.cache_read_tokens * cache_price

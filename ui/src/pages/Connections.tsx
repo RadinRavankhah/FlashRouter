@@ -130,7 +130,7 @@ function ProviderModal({
       <div className="row">
         <Field
           label="Cache markers"
-          hint="Anthropic mode injects cache_control; auto only does so for Anthropic-protocol providers."
+          hint="Auto injects cache_control only for Anthropic-capable providers; OpenAI, DeepSeek and Gemini use automatic caching plus a stable prompt_cache_key."
         >
           <select
             value={cacheMarkers}
@@ -138,7 +138,7 @@ function ProviderModal({
           >
             <option value="auto">Auto</option>
             <option value="anthropic">Anthropic cache_control</option>
-            <option value="none">Never inject</option>
+            <option value="none">No explicit markers</option>
           </select>
         </Field>
         <Field label="Cache TTL" hint="1h writes cost more but survive long agent turns.">
