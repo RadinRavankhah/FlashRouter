@@ -8,6 +8,8 @@ SDK)** at one local endpoint and let FlashRouter route requests across your
 providers with **combos**, **multi-account rotation**, **auto-fallback** and a
 **token saver** — all managed from a local dashboard.
 
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the roadmap and current status.
+
 ```text
    Your client                         FlashRouter (localhost:20128)
   ─────────────                       ─────────────────────────────
@@ -28,20 +30,22 @@ providers with **combos**, **multi-account rotation**, **auto-fallback** and a
   `/v1/messages/count_tokens`, `/v1/models`, `/v1/responses`.
 - **Providers** — OpenRouter, Groq, DeepSeek, GLM, MiniMax, Mistral, Gemini
   (OpenAI endpoint), OpenAI, Together, Cerebras, Fireworks, NVIDIA, xAI,
-  Ollama / LM Studio / llama.cpp, Anthropic, z.ai, MiniMax, DeepSeek and Kimi
-  (Anthropic endpoints), or any custom compatible base URL.
+  Ollama / LM Studio / llama.cpp, plus Anthropic-native presets for Anthropic,
+  z.ai, MiniMax, DeepSeek and Kimi, or any custom compatible base URL.
 - **Multiple accounts per provider** — weighted, priority-based rotation and
   automatic cooldown when an account is rate-limited or out of quota.
 - **Combos** — ordered fallback chains selected by the model name clients send.
-- **Auto-fallback** — retries transient failures, honors `Retry-After`, and moves
-  to the next target only before any response bytes reach the client.
+- **Auto-fallback** — on `429`, `401/403`, `402`, `5xx`, timeouts and connection
+  failures it cools the account as needed and moves to the next eligible account
+  or combo target. Fallback only happens before any response bytes reach the
+  client, so a stream is never spliced with another model's output.
 - **RTK token saver** — compresses large tool outputs (`git diff`, `grep`, `ls`,
   logs) before they are sent upstream. Fails open; never inflates a payload.
 - **Usage & cost tracking** — records input/output **and cache read/write tokens**,
   with per-model pricing, discounted cache-read rates, and automatic price import
   during discovery when the provider exposes it.
 - **Dashboard** — providers, accounts, combos, models/pricing, API keys, request
-  logs and usage.
+  logs, usage, and settings (token-saver toggle, admin token, storage health).
 - **Local & private** — SQLite storage, binds to `127.0.0.1` by default.
 
 > Scope: FlashRouter speaks the **OpenAI Chat Completions API** and mirrors the
@@ -53,12 +57,12 @@ providers with **combos**, **multi-account rotation**, **auto-fallback** and a
 
 ## Clone and run
 
-Requires **Python 3.11+**. Node is only needed if you rebuild the dashboard.
+Requires **Python 3.11+**. Node 18+ is only needed if you rebuild the dashboard.
 
 ### 1. Clone the repository
 
 ```bash
-git clone <your-repo-url> FlashRouter
+git clone https://github.com/RadinRavankhah/FlashRouter.git FlashRouter
 cd FlashRouter
 ```
 
@@ -88,7 +92,7 @@ flashrouter run
 
 Open the URL printed by the CLI (**http://127.0.0.1:20128** by default).
 The first-run walkthrough below configures a provider, account, combo, and API
-key, after which any OpenAI-compatible client can use it.
+key, after which any OpenAI- or Anthropic-compatible client can use it.
 
 ### Update an existing clone
 
@@ -100,11 +104,15 @@ flashrouter.cmd run        # Windows
 # ./flashrouter run        # macOS / Linux
 ```
 
-If you used Option B, reinstall first when dependencies changed:
+If dependencies changed, rerun `pip install -e .` in the environment you use
+before restarting (the one-command launcher only installs when the project is not
+yet importable). For the repo `.venv`:
 
 ```bash
-pip install -e .
-flashrouter run
+# Windows
+.venv\Scripts\pip install -e .
+# macOS / Linux
+.venv/bin/pip install -e .
 ```
 
 Your database, config, and backups stay in the platform data directory
@@ -123,12 +131,14 @@ Your database, config, and backups stay in the platform data directory
    optional cache-read price so prompt-caching discounts show up in cost estimates.
    Search, filter by provider, and page through the catalog.
 5. **API keys → Create key.** Copy the token.
-6. Point your client at `http://127.0.0.1:20128/v1` with that token and use the
-   combo name as the model.
+6. Point an OpenAI-compatible client at `http://127.0.0.1:20128/v1` (or an
+   Anthropic-compatible client at `http://127.0.0.1:20128`) with that token and
+   use the combo name as the model.
 
 ## Connecting clients
 
-Any OpenAI-compatible client works. Example with the OpenAI Python SDK:
+Any OpenAI-compatible client works (Anthropic-compatible clients use the root
+URL; see below). Example with the OpenAI Python SDK:
 
 ```python
 from openai import OpenAI
@@ -207,8 +217,9 @@ A client `model` value is resolved, in order, as:
 For each target, FlashRouter selects an eligible account (enabled, not cooling,
 highest priority then weighted rotation) and sends the request. On `429`, `401/403`,
 `402`, `5xx`, timeouts or connection errors it cools the account down as needed
-and falls back to the next account/target. A `400`-class client error is returned
-as-is; it does not silently swap models.
+and falls back to the next eligible account or target. Client errors such as
+`400`, `404` and `422` are returned as-is; it does not silently swap models for a
+bad request.
 
 ## Usage, cache tokens, and cost
 
@@ -246,8 +257,8 @@ estimates, not billing.
 (OpenRouter most reliably; some Together/Fireworks entries too) and normalizes
 them to USD per 1M tokens. Most providers (OpenAI, Groq, DeepSeek, Mistral, …)
 return IDs only, so those models are added with zero prices and can be edited
-manually. Re-running Discover fills prices for models that are still unpriced
-and leaves manually priced models untouched.
+manually. Re-running Discover fills prices for models that are still at zero and
+does not overwrite existing non-zero prices.
 
 Cache read tokens appear on the Overview (today's cache reads and hit rate), in
 the Requests table, on each request/attempt detail, and in per-account counters.
@@ -281,8 +292,9 @@ Safety rules:
 The compressed body is what gets logged and sent on every fallback attempt, so
 the request detail view always shows exactly what went upstream.
 
-Enable or disable globally in **Settings** (default `token_saver = true` in
-`[gateway]`, or `FLASHROUTER_TOKEN_SAVER`). Override per request with:
+Enable or disable globally in **Settings** (stored in SQLite, overriding the
+`token_saver = true` default in `[gateway]` or `FLASHROUTER_TOKEN_SAVER`). Override
+per request with:
 
 ```http
 X-FlashRouter-Token-Saver: off   # or: on
@@ -304,6 +316,7 @@ the smaller payload, not measured.
 | `GET` | `/v1/models` | Combos and catalog models (OpenAI and Anthropic listing shapes) |
 | `GET` | `/healthz` | Liveness check |
 | `GET` | `/` · `/dashboard` | Dashboard (static build in `ui/dist`) |
+| `GET` | `/api/docs` | Interactive OpenAPI docs (and `/api/openapi.json`) |
 
 Inference requests require `Authorization: Bearer <key>` (or `x-api-key`) once at
 least one API key exists. The client credential is never forwarded upstream; the
@@ -325,8 +338,10 @@ and the Anthropic envelope on `/v1/messages`:
 
 ## Configuration
 
-Configuration is optional — everything is managed from the dashboard. To change
-defaults, copy `config.example.toml` to `config.toml`:
+Configuration is optional — providers, accounts, combos, keys and the token-saver
+toggle are managed from the dashboard. To change the bind address, timeouts, or
+the optional admin token, copy `config.example.toml` to `config.toml` **inside the
+data directory**, or point `--config` / `FLASHROUTER_CONFIG` at a file elsewhere:
 
 ```toml
 [server]
@@ -336,7 +351,6 @@ log_level = "info"
 
 [gateway]
 token_saver = true
-max_retries = 2
 connect_timeout = 10.0
 request_timeout = 300.0
 
@@ -344,12 +358,18 @@ request_timeout = 300.0
 token = ""   # optional X-Admin-Token for /admin/api
 ```
 
+The dashboard **Settings** token-saver toggle is stored in SQLite and overrides
+the `token_saver` default above.
+
 Data lives in the platform data directory:
 
 - Windows: `%LOCALAPPDATA%\FlashRouter`
 - macOS/Linux: `~/.local/share/flashrouter`
 
-Override with `FLASHROUTER_DATA_DIR` or `--config`.
+Override the data directory with `FLASHROUTER_DATA_DIR`; use `--config` or
+`FLASHROUTER_CONFIG` to load a different TOML file. If you set
+`FLASHROUTER_CONFIG` without `FLASHROUTER_DATA_DIR`, the config file's folder is
+used as the data directory.
 
 Environment overrides: `FLASHROUTER_HOST`, `FLASHROUTER_PORT`,
 `FLASHROUTER_LOG_LEVEL`, `FLASHROUTER_DATA_DIR`, `FLASHROUTER_CONFIG`,
@@ -375,6 +395,7 @@ src/flashrouter/
   cli.py                 command-line entry point
   config.py              optional TOML + env configuration
   providers/presets.py   built-in OpenAI- and Anthropic-compatible presets
+  providers/pricing.py   upstream model-price extraction
   routing/engine.py      model resolution + account selection
   services/engine.py     request orchestration, fallback, streaming, logging
   services/usage.py      usage normalization + cost estimate
@@ -425,6 +446,8 @@ npm run build
 - No payload translation between API styles. `/v1/messages` only works when the
   selected provider exposes an Anthropic-compatible `/v1/messages` endpoint;
   `/v1/responses` is pass-through only. Gemini-native protocols are unsupported.
+- There is no separate retry/backoff loop for the same upstream target; transient
+  failures move on to the next eligible account or combo target.
 - Costs are **estimates** based on optional per-model prices (USD per 1M tokens),
   including an optional discounted cache-read price. Intended as a savings tracker,
   not billing.

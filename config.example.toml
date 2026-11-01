@@ -2,7 +2,8 @@
 #
 # Everything you normally need (providers, accounts, combos, API keys) is
 # configured from the dashboard and stored in SQLite. Copy this file to
-# config.toml only if you want to change the bind address or defaults.
+# config.toml inside the data directory (or pass --config) only if you want to
+# change the bind address or defaults.
 
 [server]
 host = "127.0.0.1"
@@ -12,8 +13,8 @@ log_level = "info"
 [gateway]
 # Compress large tool outputs before sending them upstream.
 token_saver = true
-# Extra retries per upstream target on transient failures.
-max_retries = 2
+# Per-request timeouts. Transient upstream failures fall back to the next
+# eligible account or combo target.
 connect_timeout = 10.0
 request_timeout = 300.0
 
