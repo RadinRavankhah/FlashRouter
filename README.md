@@ -42,8 +42,9 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the roadmap and current status.
 - **RTK token saver** — compresses large tool outputs (`git diff`, `grep`, `ls`,
   logs) before they are sent upstream. Fails open; never inflates a payload.
 - **Prompt caching** — injects Anthropic `cache_control` breakpoints for clients
-  that never send them, strips them from providers that do not accept them, and
-  pins a conversation to one account so rotation does not scatter its cache.
+  that never send them, adds a stable `prompt_cache_key` for automatic-cache
+  providers, and pins conversations to one account so rotation does not scatter
+  their caches.
 - **Usage & cost tracking** — records input/output **and cache read/write tokens**,
   with per-model pricing, discounted cache-read rates, and automatic price import
   during discovery when the provider exposes it.
@@ -247,30 +248,35 @@ Cost is estimated per model from **Models → pricing** (USD per 1M tokens):
 uncached_input = input - cache_read - cache_write
 cost = uncached_input × price_in
      + cache_read    × price_cache_in
-     + cache_write   × price_cache_write   # defaults to 1.25 × price_in
+     + cache_write   × price_cache_write   # defaults to 2 × price_in
      + output        × price_out
 ```
 
 Leave the cache-read price blank to bill cached input at the normal input price.
 Set it to the provider's discounted rate (for example `0.25` when cached input is
 a quarter of the normal price) to see realistic savings. Leave the cache-write
-price blank to use Anthropic's 1.25× 5-minute write rate, or set it to match a
-provider that writes for free. Costs are still estimates, not billing.
+price blank to bill writes at 2× input, or set it to match a provider that uses a
+different rate. Costs are still estimates, not billing.
 
 ## Prompt caching
 
-DeepSeek, OpenAI and Gemini cache prompt prefixes automatically, so routed
-traffic benefits with no configuration. Anthropic-compatible providers only
-cache blocks marked with `cache_control`; if a client (for example an OpenAI-only
-coding agent) never sends those markers, nothing is cached.
+DeepSeek, OpenAI and Gemini cache prompt prefixes automatically. Anthropic-
+compatible providers only cache blocks marked with `cache_control`; if a client
+(for example an OpenAI-only coding agent) never sends those markers, nothing is
+cached.
 
-FlashRouter fills that gap. For Anthropic-protocol providers it injects up to
-four breakpoints per request: the last system block and last cacheable tool (1h
-when configured), the last assistant turn, and a tool loop's final `tool_result`
-turn. Requests that already carry client markers are sanitized and capped at
-four rather than rewritten. For OpenAI-shaped `/v1/chat/completions` requests it
-marks the system and last assistant text blocks — but only when the provider is
-opted in, because non-Anthropic upstreams may reject the field.
+FlashRouter is cache-optimized by default for every provider:
+
+- **Anthropic-compatible providers** get up to four `cache_control` breakpoints:
+  the last system block and last cacheable tool (1h when configured), the last
+  assistant turn, and a tool loop's final `tool_result` turn. Requests that
+  already carry client markers are sanitized and capped at four.
+- **OpenAI-compatible providers** keep their automatic caching, receive a stable
+  hashed `prompt_cache_key` (for `chat/completions` and `responses`), and are
+  pinned to the account that last served the conversation. If an upstream rejects
+  the key, FlashRouter retries without it and stops sending it to that provider.
+- Provider `cache_markers=anthropic` opts an OpenAI-shaped proxy into explicit
+  markers. Only enable it for proxies that preserve `cache_control`.
 
 | Layer | Setting | Default |
 |---|---|---|
@@ -278,31 +284,31 @@ opted in, because non-Anthropic upstreams may reject the field.
 | API key | **Prompt cache** + **Cache TTL** (Auto / Force / Off) | `auto` |
 | Provider | **Cache markers** (`auto`, `anthropic`, `none`) + **Cache TTL** | `auto` |
 
-- `auto` uses breakpoints only for `anthropic-messages` providers and strips
-  them elsewhere. Use it for chat/testing keys where a one-off prompt should not
-  pay the cache-write premium.
-- `force` injects Anthropic breakpoints even through an OpenAI-compatible
-  Claude proxy. Only enable it for proxies that preserve `cache_control`
-  (verify with the provider Test button).
-- `off` removes markers from the outgoing request.
-- `1h` TTL survives long agent turns but writes cost 2× input; the default is
-  5 minutes.
+- `auto` uses explicit markers only for Anthropic-capable providers; everything
+  else gets automatic-cache optimization (`prompt_cache_key`, affinity, stable
+  prefix).
+- `force` injects Anthropic breakpoints even through an OpenAI-compatible proxy.
+  Only enable it for proxies that preserve `cache_control`.
+- `off` removes markers and disables the routing hint and account affinity.
+- `1h` TTL survives long agent turns; the default is 5 minutes.
 
-FlashRouter also pins a conversation to the account that served its previous
-request for 10 minutes (keyed by `session_id`, `prompt_cache_key`, or the opening
-system + user message), so weighted account rotation does not scatter a cache
-across credentials. The RTK token saver is skipped while injection is active,
-since rewriting historical tool output would invalidate the cached prefix.
+FlashRouter pins a conversation to the account that served its previous request
+for 15 minutes (1 hour for explicit 1h markers), keyed by `session_id`,
+`prompt_cache_key`, or the opening system + user message. This keeps weighted
+rotation from scattering a cache across credentials. The RTK token saver still
+runs for automatic-cache providers; it is skipped only when explicit marker
+injection is active.
 
 Cache reads/writes still count toward the reported input usage; check the
-request's outgoing payload to see exactly which breakpoints were sent.
+request's outgoing payload to see the exact breakpoints and `prompt_cache_key`.
 
 **Discover** imports prices from the provider's `/models` payload when present
 (OpenRouter most reliably; some Together/Fireworks entries too) and normalizes
-them to USD per 1M tokens. Most providers (OpenAI, Groq, DeepSeek, Mistral, …)
-return IDs only, so those models are added with zero prices and can be edited
-manually. Re-running Discover fills prices for models that are still at zero and
-does not overwrite existing non-zero prices.
+them to USD per 1M tokens, including cache-read and cache-write prices when
+exposed. Most providers (OpenAI, Groq, DeepSeek, Mistral, etc.) return IDs only, so
+those models are added with zero prices and can be edited manually. Re-running
+Discover fills prices for models that are still at zero and does not overwrite
+existing non-zero prices.
 
 Cache read tokens appear on the Overview (today's cache reads and hit rate), in
 the Requests table, on each request/attempt detail, and in per-account counters.
@@ -345,11 +351,11 @@ X-FlashRouter-Token-Saver: off   # or: on
 ```
 
 The header wins over the global setting. RTK is lossy and intentionally scoped to
-chat completions — `/v1/responses`, `/v1/messages` and `/v1/messages/count_tokens`
-are passed through untouched. It is also skipped when prompt-cache injection is
-active for the request (see above), because rewriting tool output in the cached
-prefix would invalidate the cache. It does not count tokens; savings are inferred
-from the smaller payload, not measured.
+chat completions - `/v1/responses`, `/v1/messages` and `/v1/messages/count_tokens`
+are passed through untouched. It is skipped when explicit prompt-cache marker
+injection is active, because rewriting historical tool output could invalidate
+the cached prefix. Automatic-cache providers still get RTK compression. It does
+not count tokens; savings are inferred from the smaller payload, not measured.
 
 ## Endpoints
 

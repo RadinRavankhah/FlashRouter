@@ -134,6 +134,7 @@ docs/ROADMAP.md          # this file
 | M7 | Cache read/write token tracking, cache-aware pricing, Models page | done |
 | M8 | Anthropic Messages pass-through (`/v1/messages`, `count_tokens`), presets, hybrid models | done |
 | M9 | Prompt-cache injection, key/provider cache policy, cache affinity, cache-write pricing | done |
+| M10 | Cache-optimized defaults, stable `prompt_cache_key`, 2x write pricing, discovery write prices | done |
 
 ## Definition of done
 
@@ -144,7 +145,7 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
 
 ## Status
 
-- **Phase:** M0–M9 complete.
+- **Phase:** M0–M10 complete.
 - **Working now:**
   - New core package (config, storage/migrations, repository, providers presets,
     router, engine, RTK saver, usage).
@@ -161,16 +162,17 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
     results, four-breakpoint budget), provider cache-marker capability, per-key
     cache policy/TTL, cache-aware account affinity, and cache-write pricing
     (schema v5: `providers.cache_markers/cache_ttl`, `keys.cache_policy/cache_ttl`,
-    `models.price_cache_write`).
+    `models.price_cache_write`). Automatic-cache providers get a stable hashed
+    `prompt_cache_key` and 15-minute affinity; cache writes default to 2x input.
   - Provider discovery imports model prices when the upstream `/models` payload
     includes them.
   - CLI: run/doctor/backup/restore/reset-admin/version/open + bootstrap launchers.
-  - 77 tests passing; ruff clean; `ui` builds.
+  - 83 tests passing; ruff clean; `ui` builds.
 - **Known gaps / next:**
   - Add more tests (cooldown, admin CRUD, RTK edge cases, restore CLI).
   - No chat↔messages translation; `/v1/responses` and `/v1/messages` are
     pass-through only.
-  - Cache affinity is in-memory (10-minute TTL); it resets when the process restarts.
+  - Cache affinity is in-memory (15-minute TTL, 1 hour for explicit 1h markers); it resets when the process restarts.
   - Version now `0.4.0`; bump to `1.0.0` when accepted.
 
 ## Changelog
@@ -221,4 +223,11 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   `cache_markers`/`cache_ttl`, per-key `cache_policy`/`cache_ttl`, the
   `x-flashrouter-cache` override, cache-aware account affinity (10-minute
   conversation pinning), RTK skipped while injection is active, and
-  `models.price_cache_write` with a 1.25× input default. Schema v5; 77 tests.
+  `models.price_cache_write` with a 1.25x input default (now 2x). Schema v5; 77 tests.
+- (session 9) Made caching cache-optimized by default for every provider. `auto`
+  now keeps automatic caching on OpenAI/DeepSeek/Gemini, adds a stable hashed
+  `prompt_cache_key` (with 400 fallback), and pins conversations for 15 minutes
+  (1 hour for explicit 1h markers); explicit `cache_control` remains opt-in for
+  OpenAI-shaped proxies and automatic for Anthropic. RTK is skipped only when
+  markers are injected. Cache writes now default to 2x input, and discovery
+  imports cache-write prices when the provider exposes them. 83 tests.
