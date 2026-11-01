@@ -19,6 +19,7 @@ htmlcov/
 
 # Local configuration and runtime data
 config.toml
+launch-video/
 *.local.toml
 .env
 backups/
