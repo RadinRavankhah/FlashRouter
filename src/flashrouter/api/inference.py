@@ -50,6 +50,11 @@ def _token_saver_override(request: Request) -> bool | None:
     return None
 
 
+def _cache_override(request: Request) -> str | None:
+    value = request.headers.get("x-flashrouter-cache", "").strip().lower()
+    return value if value in {"off", "auto", "force"} else None
+
+
 async def _json_body(request: Request) -> dict[str, Any]:
     try:
         body = await request.json()
@@ -83,6 +88,7 @@ async def chat_completions(request: Request):
         endpoint="chat/completions",
         stream=bool(body.get("stream")),
         token_saver=_token_saver_override(request),
+        cache_override=_cache_override(request),
     )
 
 
@@ -103,6 +109,7 @@ async def messages(request: Request):
         dialect="anthropic",
         incoming_headers=_anthropic_headers(request),
         query=request.url.query,
+        cache_override=_cache_override(request),
     )
 
 

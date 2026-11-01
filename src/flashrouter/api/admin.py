@@ -28,6 +28,8 @@ class ProviderIn(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
     priority: int = 100
+    cache_markers: str = "auto"
+    cache_ttl: str = ""
 
 
 class AccountIn(BaseModel):
@@ -56,6 +58,8 @@ class KeyIn(BaseModel):
     name: str
     allowed_combos: list[str] = Field(default_factory=list)
     enabled: bool = True
+    cache_policy: str = "auto"
+    cache_ttl: str = ""
 
 
 class ModelIn(BaseModel):
@@ -65,12 +69,14 @@ class ModelIn(BaseModel):
     price_in: float = 0
     price_out: float = 0
     price_cache_in: float | None = None
+    price_cache_write: float | None = None
 
 
 class ModelPriceIn(BaseModel):
     price_in: float = 0
     price_out: float = 0
     price_cache_in: float | None = None
+    price_cache_write: float | None = None
 
 
 class SettingsIn(BaseModel):
@@ -90,6 +96,32 @@ def _mask(value: str | None, keep: int = 6) -> str:
     return f"{value[:keep]}...{value[-4:]}"
 
 
+def _cache_markers(value: str) -> str:
+    normalized = (value or "auto").strip().lower()
+    if normalized not in {"auto", "anthropic", "none"}:
+        raise bad_request(
+            "cache_markers must be 'auto', 'anthropic' or 'none'",
+            param="cache_markers",
+        )
+    return normalized
+
+
+def _cache_policy(value: str) -> str:
+    normalized = (value or "auto").strip().lower()
+    if normalized not in {"auto", "force", "off"}:
+        raise bad_request(
+            "cache_policy must be 'auto', 'force' or 'off'", param="cache_policy"
+        )
+    return normalized
+
+
+def _cache_ttl(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized not in {"", "5m", "1h"}:
+        raise bad_request("cache_ttl must be '', '5m' or '1h'", param="cache_ttl")
+    return normalized
+
+
 def _provider_out(provider: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": provider["id"],
@@ -100,6 +132,8 @@ def _provider_out(provider: dict[str, Any]) -> dict[str, Any]:
         "headers": provider.get("headers", {}),
         "enabled": provider["enabled"],
         "priority": provider["priority"],
+        "cache_markers": provider.get("cache_markers", "auto"),
+        "cache_ttl": provider.get("cache_ttl", ""),
         "account_count": provider.get("account_count", 0),
         "model_count": provider.get("model_count", 0),
         "created_at": provider.get("created_at"),
@@ -134,6 +168,8 @@ def _key_out(key: dict[str, Any]) -> dict[str, Any]:
         "token_masked": _mask(key["token"], keep=10),
         "enabled": key["enabled"],
         "allowed_combos": key.get("allowed_combos", []),
+        "cache_policy": key.get("cache_policy", "auto"),
+        "cache_ttl": key.get("cache_ttl", ""),
         "last_used_at": key.get("last_used_at"),
         "created_at": key.get("created_at"),
     }
@@ -256,6 +292,8 @@ async def create_provider(request: Request, payload: ProviderIn) -> dict[str, An
         headers=payload.headers,
         enabled=payload.enabled,
         priority=payload.priority,
+        cache_markers=_cache_markers(payload.cache_markers),
+        cache_ttl=_cache_ttl(payload.cache_ttl),
     )
     provider = await repo.get_provider(provider_id)
     assert provider is not None
@@ -277,6 +315,8 @@ async def update_provider(
         "headers": payload.headers,
         "enabled": payload.enabled,
         "priority": payload.priority,
+        "cache_markers": _cache_markers(payload.cache_markers),
+        "cache_ttl": _cache_ttl(payload.cache_ttl),
     }
     if base_url:
         fields["base_url"] = base_url
@@ -466,6 +506,8 @@ async def create_key(request: Request, payload: KeyIn) -> dict[str, Any]:
         name=payload.name.strip() or "API key",
         enabled=payload.enabled,
         allowed_combos=payload.allowed_combos,
+        cache_policy=_cache_policy(payload.cache_policy),
+        cache_ttl=_cache_ttl(payload.cache_ttl),
     )
     return {
         "id": created["id"],
@@ -485,6 +527,8 @@ async def update_key(request: Request, key_id: int, payload: KeyIn) -> dict[str,
             "name": payload.name,
             "enabled": payload.enabled,
             "allowed_combos": payload.allowed_combos,
+            "cache_policy": _cache_policy(payload.cache_policy),
+            "cache_ttl": _cache_ttl(payload.cache_ttl),
         },
     )
     key = await repo.get_key(key_id)
@@ -524,6 +568,7 @@ async def create_model(request: Request, payload: ModelIn) -> dict[str, Any]:
         price_in=payload.price_in,
         price_out=payload.price_out,
         price_cache_in=payload.price_cache_in,
+        price_cache_write=payload.price_cache_write,
         source="manual",
     )
     return {"id": model_id, "provider_id": payload.provider_id, "model": payload.model}
@@ -538,6 +583,7 @@ async def update_model(
         price_in=payload.price_in,
         price_out=payload.price_out,
         price_cache_in=payload.price_cache_in,
+        price_cache_write=payload.price_cache_write,
     )
     if not changed:
         raise bad_request("Model not found", param="model_id")

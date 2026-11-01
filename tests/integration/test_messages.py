@@ -107,7 +107,7 @@ def test_messages_pass_through_and_records_usage(settings: Path):
         assert item["output_tokens"] == 5
         assert item["cache_read_tokens"] == 4
         assert item["cache_write_tokens"] == 2
-        assert item["cost"] == pytest.approx(0.000023)
+        assert item["cost"] == pytest.approx(0.0000235)
 
 
 def test_messages_streaming_forwards_and_records_usage(settings: Path):

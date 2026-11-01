@@ -18,6 +18,8 @@ class Candidate:
     protocol: str
     model: str
     headers: dict[str, str] = field(default_factory=dict)
+    cache_markers: str = "auto"
+    cache_ttl: str = ""
 
 
 def _headers(value: Any) -> dict[str, str]:
@@ -59,6 +61,8 @@ class Router:
                     protocol=t["protocol"],
                     model=t["model"],
                     headers=_headers(t.get("headers")),
+                    cache_markers=t.get("cache_markers") or "auto",
+                    cache_ttl=t.get("cache_ttl") or "",
                 )
                 for t in targets
             ]
@@ -78,6 +82,8 @@ class Router:
                         protocol=provider["protocol"],
                         model=rest,
                         headers=_headers(provider.get("headers")),
+                        cache_markers=provider.get("cache_markers") or "auto",
+                        cache_ttl=provider.get("cache_ttl") or "",
                     )
                 ]
 
@@ -90,6 +96,8 @@ class Router:
                 protocol=row["protocol"],
                 model=row["model"],
                 headers=_headers(row.get("headers")),
+                cache_markers=row.get("cache_markers") or "auto",
+                cache_ttl=row.get("cache_ttl") or "",
             )
             for row in rows
         ]

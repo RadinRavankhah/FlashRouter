@@ -77,6 +77,10 @@ def test_cache_columns_and_pricing_are_added(tmp_path: Path):
             row[1] for row in connection.execute("PRAGMA table_info(accounts)")
         }
         model_columns = {row[1] for row in connection.execute("PRAGMA table_info(models)")}
+        provider_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(providers)")
+        }
+        key_columns = {row[1] for row in connection.execute("PRAGMA table_info(keys)")}
     finally:
         connection.close()
 
@@ -85,6 +89,53 @@ def test_cache_columns_and_pricing_are_added(tmp_path: Path):
     assert {"cache_read_tokens", "cache_write_tokens"} <= usage_columns
     assert "cache_read_tokens" in account_columns
     assert "price_cache_in" in model_columns
+    assert "price_cache_write" in model_columns
+    assert {"cache_markers", "cache_ttl"} <= provider_columns
+    assert {"cache_policy", "cache_ttl"} <= key_columns
+
+
+def test_v4_database_upgrades_with_cache_policy_defaults(tmp_path: Path):
+    path = tmp_path / "flashrouter.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT)"
+    )
+    connection.execute(
+        "CREATE TABLE flashrouter_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO flashrouter_meta(key, value) VALUES ('schema', 'flashrouter')"
+    )
+    for version in range(1, 5):
+        connection.executescript(MIGRATIONS[version])
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, '2020-01-01')",
+            (version,),
+        )
+    connection.execute(
+        "INSERT INTO providers(name, base_url, created_at, updated_at) "
+        "VALUES ('p', 'https://p.test/v1', 'x', 'x')"
+    )
+    connection.execute(
+        "INSERT INTO keys(name, token, created_at) VALUES ('k', 'fr-test', 'x')"
+    )
+    connection.commit()
+    connection.close()
+
+    _table_names(path)
+
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    try:
+        provider = dict(connection.execute("SELECT * FROM providers").fetchone())
+        key = dict(connection.execute("SELECT * FROM keys").fetchone())
+    finally:
+        connection.close()
+
+    assert provider["cache_markers"] == "auto"
+    assert provider["cache_ttl"] == ""
+    assert key["cache_policy"] == "auto"
+    assert key["cache_ttl"] == ""
 
 
 def test_v2_database_upgrades_to_v3(tmp_path: Path):

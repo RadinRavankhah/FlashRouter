@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from typing import Any
@@ -21,6 +22,10 @@ from flashrouter.errors import (
 from flashrouter.logging import get_logger
 from flashrouter.routing.engine import Candidate, Router, order_accounts
 from flashrouter.savers.rtk import apply_token_saver
+from flashrouter.services.caching import (
+    apply_cache_markers,
+    resolve_cache_decision,
+)
 from flashrouter.services.usage import (
     Usage,
     estimate_cost,
@@ -38,6 +43,7 @@ from flashrouter.transport.urls import join_url
 PAYLOAD_LIMIT = 200_000
 STREAM_CAPTURE_LIMIT = 65_536
 _READ_CHUNK = 65_536
+AFFINITY_TTL_SECONDS = 600
 
 
 def _dump(value: Any, limit: int = PAYLOAD_LIMIT) -> str:
@@ -81,6 +87,56 @@ def _upstream_message(text: str, dialect: str | None, status: int) -> str:
             if isinstance(error, dict) and isinstance(error.get("message"), str):
                 return error["message"][:1000]
     return text[:1000]
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text") or block.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        text = content.get("text") or content.get("content")
+        return text if isinstance(text, str) else ""
+    return ""
+
+
+def _affinity_key(body: dict[str, Any], model: str) -> str | None:
+    """Stable conversation key for cache-aware account pinning."""
+    explicit = body.get("session_id") or body.get("prompt_cache_key")
+    if isinstance(explicit, str) and explicit.strip():
+        return "s:" + explicit.strip()[:256]
+
+    parts: list[list[str]] = []
+    system = body.get("system")
+    if system:
+        parts.append(["system", _content_text(system)])
+
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        messages = body.get("input") if isinstance(body.get("input"), list) else []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "")
+        if role in {"system", "developer"}:
+            if not parts:
+                parts.append(["system", _content_text(message.get("content"))])
+            continue
+        parts.append([role, _content_text(message.get("content"))])
+        break
+
+    if not parts:
+        return None
+    blob = json.dumps([model, parts], ensure_ascii=False, sort_keys=True)
+    return "h:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
 
 
 class _SseAccumulator:
@@ -186,6 +242,7 @@ class Engine:
         self._client = client
         self._logger = get_logger()
         self._rr: dict[int, int] = {}
+        self._affinity: dict[str, tuple[float, int, int]] = {}
 
     # ------------------------------------------------------------------ public
     async def handle(
@@ -201,11 +258,13 @@ class Engine:
         incoming_headers: dict[str, str] | None = None,
         query: str = "",
         record_usage: bool = True,
+        cache_override: str | None = None,
     ) -> Response:
         started = time.perf_counter()
         requested_model = str(body.get("model", "") or "")
         key_id = key["id"] if key else None
         key_name = key["name"] if key else None
+        affinity_key = _affinity_key(body, requested_model)
 
         await self._repo.create_request(
             request_id=request_id,
@@ -244,6 +303,7 @@ class Engine:
                 counter = self._rr.get(candidate.provider_id, 0)
                 self._rr[candidate.provider_id] = counter + 1
                 accounts = order_accounts(eligible, counter)
+                accounts = self._pin_account(accounts, candidate.provider_id, affinity_key)
 
                 for account in accounts:
                     attempts += 1
@@ -273,6 +333,9 @@ class Engine:
                             incoming_headers=incoming_headers,
                             query=query,
                             record_usage=record_usage,
+                            cache_override=cache_override,
+                            affinity_key=affinity_key,
+                            key=key,
                         )
                     except GatewayError as exc:
                         last_error = exc
@@ -351,14 +414,35 @@ class Engine:
         incoming_headers: dict[str, str] | None,
         query: str,
         record_usage: bool,
+        cache_override: str | None = None,
+        affinity_key: str | None = None,
+        key: dict[str, Any] | None = None,
     ) -> Response | None:
+        provider_cache = {
+            "protocol": candidate.protocol,
+            "cache_markers": candidate.cache_markers,
+            "cache_ttl": candidate.cache_ttl,
+        }
+        cache_decision = resolve_cache_decision(
+            endpoint=endpoint,
+            provider=provider_cache,
+            key=key,
+            override=cache_override,
+        )
         outbound = dict(body)
         outbound["model"] = candidate.model
         saver_enabled = (
             token_saver if token_saver is not None else await self._token_saver_enabled()
         )
-        if endpoint == "chat/completions" and saver_enabled:
+        if (
+            endpoint == "chat/completions"
+            and saver_enabled
+            and not cache_decision.active
+        ):
             outbound = apply_token_saver(outbound)
+        outbound = apply_cache_markers(
+            outbound, endpoint=endpoint, decision=cache_decision
+        )
 
         await self._repo.add_payload(
             request_id=request_id,
@@ -385,8 +469,11 @@ class Engine:
         except (TypeError, ValueError) as exc:
             raise upstream_error(502, f"Could not encode request: {exc}") from exc
 
-        price_in, price_out, price_cache_in = await self._repo.get_model_price(
-            candidate.provider_id, candidate.model
+        price_in, price_out, price_cache_in, price_cache_write = (
+            await self._repo.get_model_price(candidate.provider_id, candidate.model)
+        )
+        cache_pin = cache_decision.active or (
+            price_cache_in is not None and price_cache_in < price_in
         )
 
         if stream:
@@ -398,6 +485,10 @@ class Engine:
                     response.status_code, text, candidate, account, attempt_id, dialect
                 )
                 return None
+            if cache_pin and affinity_key:
+                self._remember_affinity(
+                    affinity_key, candidate.provider_id, account["id"]
+                )
             return self._stream_response(
                 response=response,
                 candidate=candidate,
@@ -410,6 +501,7 @@ class Engine:
                 price_in=price_in,
                 price_out=price_out,
                 price_cache_in=price_cache_in,
+                price_cache_write=price_cache_write,
                 record_usage=record_usage,
             )
 
@@ -420,6 +512,10 @@ class Engine:
                 response.status_code, text, candidate, account, attempt_id, dialect
             )
             return None
+        if cache_pin and affinity_key:
+            self._remember_affinity(
+                affinity_key, candidate.provider_id, account["id"]
+            )
 
         content = response.content
         try:
@@ -431,6 +527,7 @@ class Engine:
             price_in=price_in,
             price_out=price_out,
             price_cache_in=price_cache_in,
+            price_cache_write=price_cache_write,
             usage=usage,
         )
         duration_ms = int((time.perf_counter() - started) * 1000)
@@ -534,6 +631,7 @@ class Engine:
         price_in: float,
         price_out: float,
         price_cache_in: float | None,
+        price_cache_write: float | None = None,
         record_usage: bool = True,
     ) -> StreamingResponse:
         async def iterator():
@@ -578,6 +676,7 @@ class Engine:
                         price_in=price_in,
                         price_out=price_out,
                         price_cache_in=price_cache_in,
+                        price_cache_write=price_cache_write,
                         record_usage=record_usage,
                         accumulator=accumulator,
                         status=status,
@@ -610,6 +709,7 @@ class Engine:
         price_in: float,
         price_out: float,
         price_cache_in: float | None,
+        price_cache_write: float | None,
         record_usage: bool,
         accumulator: _SseAccumulator,
         status: str,
@@ -626,6 +726,7 @@ class Engine:
             price_in=price_in,
             price_out=price_out,
             price_cache_in=price_cache_in,
+            price_cache_write=price_cache_write,
             usage=usage,
         )
         duration_ms = int((time.perf_counter() - started) * 1000)
@@ -719,6 +820,46 @@ class Engine:
         )
 
     # ----------------------------------------------------------------- helpers
+    def _pin_account(
+        self,
+        accounts: list[dict[str, Any]],
+        provider_id: int,
+        affinity_key: str | None,
+    ) -> list[dict[str, Any]]:
+        if not affinity_key or not accounts:
+            return accounts
+        entry = self._affinity.get(affinity_key)
+        if entry is None:
+            return accounts
+        expires, pinned_provider, pinned_account = entry
+        if time.monotonic() >= expires:
+            self._affinity.pop(affinity_key, None)
+            return accounts
+        if pinned_provider != provider_id:
+            return accounts
+        for index, account in enumerate(accounts):
+            if account["id"] != pinned_account:
+                continue
+            if index == 0:
+                return accounts
+            return [account, *accounts[:index], *accounts[index + 1 :]]
+        return accounts
+
+    def _remember_affinity(
+        self, affinity_key: str, provider_id: int, account_id: int
+    ) -> None:
+        self._affinity[affinity_key] = (
+            time.monotonic() + AFFINITY_TTL_SECONDS,
+            provider_id,
+            account_id,
+        )
+        if len(self._affinity) <= 4096:
+            return
+        now = time.monotonic()
+        for key, (expires, _, _) in list(self._affinity.items()):
+            if expires <= now:
+                self._affinity.pop(key, None)
+
     async def _token_saver_enabled(self) -> bool:
         stored = await self._repo.get_setting("token_saver")
         if stored is None:

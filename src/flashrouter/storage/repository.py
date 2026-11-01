@@ -104,11 +104,14 @@ class Repository:
         headers: dict[str, str] | None = None,
         enabled: bool = True,
         priority: int = 100,
+        cache_markers: str = "auto",
+        cache_ttl: str = "",
     ) -> int:
         now = now_iso()
         return await self._write(
             "INSERT INTO providers(name, preset, base_url, protocol, headers, enabled, "
-            "priority, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "priority, cache_markers, cache_ttl, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 name,
                 preset,
@@ -117,13 +120,25 @@ class Repository:
                 json.dumps(headers or {}),
                 int(enabled),
                 priority,
+                cache_markers,
+                cache_ttl,
                 now,
                 now,
             ),
         )
 
     async def update_provider(self, provider_id: int, fields: dict[str, Any]) -> bool:
-        allowed = {"name", "preset", "base_url", "protocol", "headers", "enabled", "priority"}
+        allowed = {
+            "name",
+            "preset",
+            "base_url",
+            "protocol",
+            "headers",
+            "enabled",
+            "priority",
+            "cache_markers",
+            "cache_ttl",
+        }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return False
@@ -268,6 +283,7 @@ class Repository:
         price_in: float = 0,
         price_out: float = 0,
         price_cache_in: float | None = None,
+        price_cache_write: float | None = None,
         source: str = "manual",
         enabled: bool = True,
     ) -> int:
@@ -277,12 +293,13 @@ class Repository:
         if existing:
             await self._write(
                 "UPDATE models SET display_name=?, price_in=?, price_out=?, "
-                "price_cache_in=?, source=?, enabled=? WHERE id=?",
+                "price_cache_in=?, price_cache_write=?, source=?, enabled=? WHERE id=?",
                 (
                     display_name,
                     price_in,
                     price_out,
                     price_cache_in,
+                    price_cache_write,
                     source,
                     int(enabled),
                     existing["id"],
@@ -291,7 +308,8 @@ class Repository:
             return int(existing["id"])
         return await self._write(
             "INSERT INTO models(provider_id, model, display_name, price_in, price_out, "
-            "price_cache_in, source, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "price_cache_in, price_cache_write, source, enabled, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 provider_id,
                 model,
@@ -299,6 +317,7 @@ class Repository:
                 price_in,
                 price_out,
                 price_cache_in,
+                price_cache_write,
                 source,
                 int(enabled),
                 now_iso(),
@@ -314,6 +333,7 @@ class Repository:
         price_in: float | None = None,
         price_out: float | None = None,
         price_cache_in: float | None = None,
+        price_cache_write: float | None = None,
     ) -> int:
         """Insert a discovered model and backfill prices only when they are unset."""
         existing = await self._fetchone(
@@ -328,19 +348,27 @@ class Repository:
                 and float(existing["price_out"]) == 0
             ):
                 await self._write(
-                    "UPDATE models SET price_in=?, price_out=?, price_cache_in=? WHERE id=?",
-                    (price_in, price_out, price_cache_in, existing["id"]),
+                    "UPDATE models SET price_in=?, price_out=?, price_cache_in=?, "
+                    "price_cache_write=? WHERE id=?",
+                    (
+                        price_in,
+                        price_out,
+                        price_cache_in,
+                        price_cache_write,
+                        existing["id"],
+                    ),
                 )
             return int(existing["id"])
         return await self._write(
             "INSERT INTO models(provider_id, model, price_in, price_out, price_cache_in, "
-            "source, created_at) VALUES (?,?,?,?,?,?,?)",
+            "price_cache_write, source, created_at) VALUES (?,?,?,?,?,?,?,?)",
             (
                 provider_id,
                 model,
                 price_in or 0,
                 price_out or 0,
                 price_cache_in,
+                price_cache_write,
                 source,
                 now_iso(),
             ),
@@ -353,34 +381,39 @@ class Repository:
         price_in: float,
         price_out: float,
         price_cache_in: float | None,
+        price_cache_write: float | None = None,
     ) -> bool:
         changed = await self._write(
-            "UPDATE models SET price_in=?, price_out=?, price_cache_in=? WHERE id=?",
-            (price_in, price_out, price_cache_in, model_id),
+            "UPDATE models SET price_in=?, price_out=?, price_cache_in=?, "
+            "price_cache_write=? WHERE id=?",
+            (price_in, price_out, price_cache_in, price_cache_write, model_id),
         )
         return changed > 0
 
     async def get_model_price(
         self, provider_id: int, model: str
-    ) -> tuple[float, float, float | None]:
+    ) -> tuple[float, float, float | None, float | None]:
         row = await self._fetchone(
-            "SELECT price_in, price_out, price_cache_in FROM models "
+            "SELECT price_in, price_out, price_cache_in, price_cache_write FROM models "
             "WHERE provider_id=? AND model=?",
             (provider_id, model),
         )
         if row is None:
-            return (0.0, 0.0, None)
+            return (0.0, 0.0, None, None)
         cache_price = row["price_cache_in"]
+        write_price = row["price_cache_write"]
         return (
             float(row["price_in"]),
             float(row["price_out"]),
             float(cache_price) if cache_price is not None else None,
+            float(write_price) if write_price is not None else None,
         )
 
     async def models_by_name(self, model: str) -> list[dict[str, Any]]:
         rows = await self._fetchall(
             "SELECT m.model, p.id AS provider_id, p.name AS provider_name, "
-            "p.base_url, p.protocol, p.headers, p.enabled AS provider_enabled, "
+            "p.base_url, p.protocol, p.headers, p.cache_markers, p.cache_ttl, "
+            "p.enabled AS provider_enabled, "
             "p.priority AS provider_priority "
             "FROM models m JOIN providers p ON p.id=m.provider_id "
             "WHERE m.model=? AND m.enabled=1 AND p.enabled=1 "
@@ -397,6 +430,7 @@ class Repository:
         rows = await self._fetchall(
             "SELECT t.id, t.combo_id, t.position, t.provider_id, t.model, t.enabled, "
             "p.name AS provider_name, p.base_url, p.protocol, p.headers, "
+            "p.cache_markers, p.cache_ttl, "
             "p.enabled AS provider_enabled "
             "FROM combo_targets t JOIN providers p ON p.id=t.provider_id "
             "WHERE t.combo_id=? ORDER BY t.position",
@@ -524,17 +558,34 @@ class Repository:
         token: str | None = None,
         enabled: bool = True,
         allowed_combos: list[str] | None = None,
+        cache_policy: str = "auto",
+        cache_ttl: str = "",
     ) -> dict[str, Any]:
         token = token or ("fr-" + secrets.token_urlsafe(32))
         key_id = await self._write(
-            "INSERT INTO keys(name, token, enabled, allowed_combos, created_at) "
-            "VALUES (?,?,?,?,?)",
-            (name, token, int(enabled), json.dumps(allowed_combos or []), now_iso()),
+            "INSERT INTO keys(name, token, enabled, allowed_combos, cache_policy, "
+            "cache_ttl, created_at) VALUES (?,?,?,?,?,?,?)",
+            (
+                name,
+                token,
+                int(enabled),
+                json.dumps(allowed_combos or []),
+                cache_policy,
+                cache_ttl,
+                now_iso(),
+            ),
         )
         return {"id": key_id, "name": name, "token": token}
 
     async def update_key(self, key_id: int, fields: dict[str, Any]) -> bool:
-        allowed = {"name", "enabled", "allowed_combos", "token"}
+        allowed = {
+            "name",
+            "enabled",
+            "allowed_combos",
+            "token",
+            "cache_policy",
+            "cache_ttl",
+        }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return False
