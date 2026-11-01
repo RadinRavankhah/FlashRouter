@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
 
+import anyio
 import httpx
 from starlette.responses import Response, StreamingResponse
 
@@ -232,61 +234,99 @@ class Engine:
 
         attempts = 0
         last_error: GatewayError | None = None
+        current_attempt_id: int | None = None
 
-        for candidate in candidates:
-            eligible = await self._repo.eligible_accounts(candidate.provider_id)
-            if not eligible:
-                continue
-            counter = self._rr.get(candidate.provider_id, 0)
-            self._rr[candidate.provider_id] = counter + 1
-            accounts = order_accounts(eligible, counter)
+        try:
+            for candidate in candidates:
+                eligible = await self._repo.eligible_accounts(candidate.provider_id)
+                if not eligible:
+                    continue
+                counter = self._rr.get(candidate.provider_id, 0)
+                self._rr[candidate.provider_id] = counter + 1
+                accounts = order_accounts(eligible, counter)
 
-            for account in accounts:
-                attempts += 1
-                attempt_id = await self._repo.add_attempt(
-                    request_id=request_id,
-                    attempt_n=attempts,
-                    provider_id=candidate.provider_id,
-                    provider_name=candidate.provider_name,
-                    account_id=account["id"],
-                    account_name=account["name"],
-                    model=candidate.model,
-                )
-                try:
-                    outcome = await self._attempt(
-                        candidate=candidate,
-                        account=account,
-                        body=body,
-                        endpoint=endpoint,
-                        stream=stream,
+                for account in accounts:
+                    attempts += 1
+                    current_attempt_id = await self._repo.add_attempt(
                         request_id=request_id,
                         attempt_n=attempts,
-                        attempt_id=attempt_id,
-                        started=started,
-                        key_id=key_id,
-                        token_saver=token_saver,
-                        dialect=dialect,
-                        incoming_headers=incoming_headers,
-                        query=query,
-                        record_usage=record_usage,
+                        provider_id=candidate.provider_id,
+                        provider_name=candidate.provider_name,
+                        account_id=account["id"],
+                        account_name=account["name"],
+                        model=candidate.model,
                     )
-                except GatewayError as exc:
-                    last_error = exc
-                    await self._repo.finish_attempt(
-                        attempt_id,
-                        {
-                            "status": "error",
-                            "error_type": exc.type,
-                            "error_message": exc.message,
-                            "http_status": exc.status_code,
-                        },
-                    )
-                    if exc.status_code in (400, 404, 422):
-                        await self._finalize_error(request_id, exc, started, attempts)
-                        raise
-                    continue
-                if outcome is not None:
-                    return outcome
+                    try:
+                        outcome = await self._attempt(
+                            candidate=candidate,
+                            account=account,
+                            body=body,
+                            endpoint=endpoint,
+                            stream=stream,
+                            request_id=request_id,
+                            attempt_n=attempts,
+                            attempt_id=current_attempt_id,
+                            started=started,
+                            key_id=key_id,
+                            token_saver=token_saver,
+                            dialect=dialect,
+                            incoming_headers=incoming_headers,
+                            query=query,
+                            record_usage=record_usage,
+                        )
+                    except GatewayError as exc:
+                        last_error = exc
+                        await self._repo.finish_attempt(
+                            current_attempt_id,
+                            {
+                                "status": "error",
+                                "error_type": exc.type,
+                                "error_message": exc.message,
+                                "http_status": exc.status_code,
+                            },
+                        )
+                        current_attempt_id = None
+                        if exc.status_code in (400, 404, 422):
+                            await self._finalize_error(request_id, exc, started, attempts)
+                            raise
+                        continue
+                    except httpx.HTTPError as exc:
+                        # Transport failures happen before anything reaches the
+                        # client, so they are safe to fall back from.
+                        timed_out = isinstance(exc, httpx.TimeoutException)
+                        status = 504 if timed_out else 502
+                        message = f"{type(exc).__name__}: {exc}"[:1000]
+                        await self._repo.finish_attempt(
+                            current_attempt_id,
+                            {
+                                "status": "error",
+                                "error_type": "timeout" if timed_out else "connection_error",
+                                "error_message": message,
+                                "http_status": status,
+                            },
+                        )
+                        current_attempt_id = None
+                        last_error = upstream_error(status, message)
+                        continue
+                    current_attempt_id = None
+                    if outcome is not None:
+                        return outcome
+        except asyncio.CancelledError:
+            await self._finalize_interrupted(
+                request_id, current_attempt_id, started, attempts
+            )
+            raise
+        except GatewayError:
+            # Already finalized at the point it was raised.
+            raise
+        except Exception as exc:
+            await self._finalize_error(
+                request_id,
+                upstream_error(500, f"Internal gateway error: {exc}"),
+                started,
+                attempts,
+            )
+            raise
 
         exc = last_error or no_available_upstream(requested_model)
         await self._finalize_error(request_id, exc, started, attempts)
@@ -500,6 +540,7 @@ class Engine:
             accumulator = _SseAccumulator()
             first_byte_at: float | None = None
             status = "success"
+            error_type: str | None = None
             error_message: str | None = None
             try:
                 async for chunk in response.aiter_raw():
@@ -509,95 +550,40 @@ class Engine:
                     yield chunk
             except httpx.HTTPError as exc:
                 status = "error"
+                error_type = "stream_error"
                 error_message = f"{type(exc).__name__}: {exc}"
                 self._logger.warning("stream_error id=%s %s", request_id, error_message)
+            except (asyncio.CancelledError, GeneratorExit):
+                # The client went away mid-stream. Failures inside the
+                # cancellation must not skip the bookkeeping below.
+                status = "interrupted"
+                error_type = "client_disconnect"
+                error_message = "Client disconnected before the stream completed"
+                raise
             finally:
-                await response.aclose()
-                if accumulator.stream_error:
-                    status = "error"
-                    error_message = accumulator.stream_error
-                usage = accumulator.usage
-                cost = estimate_cost(
-                    price_in=price_in,
-                    price_out=price_out,
-                    price_cache_in=price_cache_in,
-                    usage=usage,
-                )
-                duration_ms = int((time.perf_counter() - started) * 1000)
-                ttft_ms = (
-                    int((first_byte_at - started) * 1000) if first_byte_at else None
-                )
-                await self._repo.add_payload(
-                    request_id=request_id,
-                    attempt_n=attempt_n,
-                    kind="response",
-                    body=_dump(
-                        {
-                            "streamed": True,
-                            "text": accumulator.text,
-                            "finish_reason": accumulator.finish_reason,
-                            "usage": {
-                                "input_tokens": usage.input_tokens,
-                                "output_tokens": usage.output_tokens,
-                                "cache_read_tokens": usage.cache_read_tokens,
-                                "cache_write_tokens": usage.cache_write_tokens,
-                            },
-                        }
-                    ),
-                )
-                await self._repo.finish_attempt(
-                    attempt_id,
-                    {
-                        "status": status,
-                        "http_status": response.status_code,
-                        "error_message": error_message,
-                        "input_tokens": usage.input_tokens,
-                        "output_tokens": usage.output_tokens,
-                        "cache_read_tokens": usage.cache_read_tokens,
-                        "cache_write_tokens": usage.cache_write_tokens,
-                        "cost": cost,
-                    },
-                )
-                if status == "success" and record_usage:
-                    await self._record_usage(
-                        request_id=request_id,
+                # A client disconnect cancels this task while Starlette tears
+                # the response down, which would otherwise abort the database
+                # writes below and leave the request stuck on "pending".
+                with anyio.CancelScope(shield=True):
+                    await self._finalize_stream(
+                        response=response,
                         candidate=candidate,
                         account=account,
+                        request_id=request_id,
+                        attempt_id=attempt_id,
+                        attempt_n=attempt_n,
+                        started=started,
+                        first_byte_at=first_byte_at,
                         key_id=key_id,
-                        usage=usage,
-                        cost=cost,
+                        price_in=price_in,
+                        price_out=price_out,
+                        price_cache_in=price_cache_in,
+                        record_usage=record_usage,
+                        accumulator=accumulator,
+                        status=status,
+                        error_type=error_type,
+                        error_message=error_message,
                     )
-                await self._repo.finish_request(
-                    request_id,
-                    {
-                        "resolved_provider": candidate.provider_name,
-                        "resolved_model": candidate.model,
-                        "status": status,
-                        "http_status": response.status_code,
-                        "error_type": "stream_error" if status != "success" else None,
-                        "error_message": error_message,
-                        "duration_ms": duration_ms,
-                        "ttft_ms": ttft_ms,
-                        "input_tokens": usage.input_tokens,
-                        "output_tokens": usage.output_tokens,
-                        "cache_read_tokens": usage.cache_read_tokens,
-                        "cache_write_tokens": usage.cache_write_tokens,
-                        "cost": cost,
-                        "attempts": attempt_n,
-                    },
-                )
-                self._logger.info(
-                    "request_stream id=%s provider=%s model=%s status=%s "
-                    "tokens=%s/%s cache_read=%s ms=%s",
-                    request_id,
-                    candidate.provider_name,
-                    candidate.model,
-                    status,
-                    usage.input_tokens,
-                    usage.output_tokens,
-                    usage.cache_read_tokens,
-                    duration_ms,
-                )
 
         headers = filter_response_headers(response.headers, streaming=True)
         headers.pop("content-type", None)
@@ -607,6 +593,129 @@ class Engine:
             status_code=response.status_code,
             headers=headers,
             media_type="text/event-stream",
+        )
+
+    async def _finalize_stream(
+        self,
+        *,
+        response: httpx.Response,
+        candidate: Candidate,
+        account: dict[str, Any],
+        request_id: str,
+        attempt_id: int,
+        attempt_n: int,
+        started: float,
+        first_byte_at: float | None,
+        key_id: int | None,
+        price_in: float,
+        price_out: float,
+        price_cache_in: float | None,
+        record_usage: bool,
+        accumulator: _SseAccumulator,
+        status: str,
+        error_type: str | None,
+        error_message: str | None,
+    ) -> None:
+        """Persist a finished stream, keeping going if one write fails."""
+        if accumulator.stream_error and status == "success":
+            status = "error"
+            error_type = "stream_error"
+            error_message = accumulator.stream_error
+        usage = accumulator.usage
+        cost = estimate_cost(
+            price_in=price_in,
+            price_out=price_out,
+            price_cache_in=price_cache_in,
+            usage=usage,
+        )
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        ttft_ms = int((first_byte_at - started) * 1000) if first_byte_at else None
+        await response.aclose()
+        try:
+            await self._repo.add_payload(
+                request_id=request_id,
+                attempt_n=attempt_n,
+                kind="response",
+                body=_dump(
+                    {
+                        "streamed": True,
+                        "text": accumulator.text,
+                        "finish_reason": accumulator.finish_reason,
+                        "usage": {
+                            "input_tokens": usage.input_tokens,
+                            "output_tokens": usage.output_tokens,
+                            "cache_read_tokens": usage.cache_read_tokens,
+                            "cache_write_tokens": usage.cache_write_tokens,
+                        },
+                    }
+                ),
+            )
+        except Exception:
+            self._logger.exception("stream_payload_failed id=%s", request_id)
+        try:
+            await self._repo.finish_attempt(
+                attempt_id,
+                {
+                    "status": status,
+                    "http_status": response.status_code,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cache_read_tokens": usage.cache_read_tokens,
+                    "cache_write_tokens": usage.cache_write_tokens,
+                    "cost": cost,
+                },
+            )
+        except Exception:
+            self._logger.exception("stream_attempt_failed id=%s", request_id)
+        if record_usage and (
+            status == "success" or (status == "interrupted" and usage.total_tokens)
+        ):
+            try:
+                await self._record_usage(
+                    request_id=request_id,
+                    candidate=candidate,
+                    account=account,
+                    key_id=key_id,
+                    usage=usage,
+                    cost=cost,
+                )
+            except Exception:
+                self._logger.exception("stream_usage_failed id=%s", request_id)
+        try:
+            await self._repo.finish_request(
+                request_id,
+                {
+                    "resolved_provider": candidate.provider_name,
+                    "resolved_model": candidate.model,
+                    "status": status,
+                    "http_status": response.status_code,
+                    "error_type": error_type,
+                    "error_message": error_message,
+                    "duration_ms": duration_ms,
+                    "ttft_ms": ttft_ms,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cache_read_tokens": usage.cache_read_tokens,
+                    "cache_write_tokens": usage.cache_write_tokens,
+                    "cost": cost,
+                    "attempts": attempt_n,
+                },
+            )
+        except Exception:
+            self._logger.exception("stream_request_failed id=%s", request_id)
+        self._logger.info(
+            "request_stream id=%s provider=%s model=%s status=%s "
+            "tokens=%s/%s cache_read=%s ms=%s",
+            request_id,
+            candidate.provider_name,
+            candidate.model,
+            status,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            duration_ms,
         )
 
     # ----------------------------------------------------------------- helpers
@@ -641,6 +750,46 @@ class Engine:
             cache_write_tokens=usage.cache_write_tokens,
             cost=cost,
         )
+
+    async def _finalize_interrupted(
+        self,
+        request_id: str,
+        attempt_id: int | None,
+        started: float,
+        attempts: int,
+    ) -> None:
+        """Record a request cancelled before its response started streaming."""
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        message = "Client disconnected before the request completed"
+        with anyio.CancelScope(shield=True):
+            if attempt_id is not None:
+                try:
+                    await self._repo.finish_attempt(
+                        attempt_id,
+                        {
+                            "status": "interrupted",
+                            "error_type": "client_disconnect",
+                            "error_message": message,
+                        },
+                    )
+                except Exception:
+                    self._logger.exception(
+                        "interrupted_attempt_failed id=%s", request_id
+                    )
+            try:
+                await self._repo.finish_request(
+                    request_id,
+                    {
+                        "status": "interrupted",
+                        "error_type": "client_disconnect",
+                        "error_message": message,
+                        "duration_ms": duration_ms,
+                        "attempts": attempts,
+                    },
+                )
+            except Exception:
+                self._logger.exception("interrupted_request_failed id=%s", request_id)
+        self._logger.warning("request_interrupted id=%s", request_id)
 
     async def _finalize_error(
         self,

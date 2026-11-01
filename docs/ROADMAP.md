@@ -159,7 +159,7 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   - Provider discovery imports model prices when the upstream `/models` payload
     includes them.
   - CLI: run/doctor/backup/restore/reset-admin/version/open + bootstrap launchers.
-  - 55 tests passing; ruff clean; `ui` builds.
+  - 59 tests passing; ruff clean; `ui` builds.
 - **Known gaps / next:**
   - Add more tests (cooldown, admin CRUD, RTK edge cases, restore CLI).
   - No chat↔messages translation; `/v1/responses` and `/v1/messages` are
@@ -199,3 +199,12 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   error envelopes, streaming usage capture (`message_start`/`message_delta`),
   hybrid `/v1/models`, `requests.endpoint` (schema v4) with dashboard filter,
   Anthropic-compatible presets, and a provider protocol selector (55 tests).
+- (session 7) Fixed requests left blank on "pending"/"interrupted" in the dashboard.
+  A client disconnect cancels the streaming response (Starlette/uvicorn spec 2.3),
+  which aborted the cleanup awaits and skipped `finish_attempt`/`finish_request`;
+  transport errors (`httpx.HTTPError`, pre-stream cancellations, unhandled
+  exceptions) had the same effect. Stream/attempt bookkeeping is now shielded with
+  `anyio.CancelScope(shield=True)`, disconnects are recorded as `interrupted` with
+  `client_disconnect`, transport failures fall back to the next target and are
+  recorded, and startup recovery backfills interrupted rows from their successful
+  attempt instead of leaving them empty (59 tests).

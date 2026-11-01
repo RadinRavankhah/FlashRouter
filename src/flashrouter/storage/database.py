@@ -118,12 +118,74 @@ class Database:
                 (version,),
             )
             await conn.commit()
-        # Recover rows left pending by an abrupt shutdown.
+        # Recover rows left pending by an abrupt shutdown or a cancelled
+        # request. Close attempts first so their recorded results can be used
+        # to fill in the parent request instead of leaving it blank.
+        await conn.execute(
+            "UPDATE request_attempts SET status='interrupted', "
+            "finished_at=COALESCE(finished_at, started_at) WHERE status='pending'"
+        )
         await conn.execute(
             "UPDATE requests SET status='interrupted' WHERE status='pending'"
         )
         await conn.execute(
-            "UPDATE request_attempts SET status='interrupted' WHERE status='pending'"
+            """
+            UPDATE requests SET
+                finished_at=COALESCE(
+                    finished_at,
+                    (SELECT a.finished_at FROM request_attempts a
+                     WHERE a.request_id=requests.request_id AND a.status='success'
+                     ORDER BY a.attempt_n DESC LIMIT 1),
+                    created_at
+                ),
+                resolved_provider=COALESCE(
+                    resolved_provider,
+                    (SELECT a.provider_name FROM request_attempts a
+                     WHERE a.request_id=requests.request_id AND a.status='success'
+                     ORDER BY a.attempt_n DESC LIMIT 1)
+                ),
+                resolved_model=COALESCE(
+                    resolved_model,
+                    (SELECT a.model FROM request_attempts a
+                     WHERE a.request_id=requests.request_id AND a.status='success'
+                     ORDER BY a.attempt_n DESC LIMIT 1)
+                ),
+                input_tokens=COALESCE(
+                    input_tokens,
+                    (SELECT a.input_tokens FROM request_attempts a
+                     WHERE a.request_id=requests.request_id AND a.status='success'
+                     ORDER BY a.attempt_n DESC LIMIT 1)
+                ),
+                output_tokens=COALESCE(
+                    output_tokens,
+                    (SELECT a.output_tokens FROM request_attempts a
+                     WHERE a.request_id=requests.request_id AND a.status='success'
+                     ORDER BY a.attempt_n DESC LIMIT 1)
+                ),
+                cache_read_tokens=COALESCE(
+                    cache_read_tokens,
+                    (SELECT a.cache_read_tokens FROM request_attempts a
+                     WHERE a.request_id=requests.request_id AND a.status='success'
+                     ORDER BY a.attempt_n DESC LIMIT 1)
+                ),
+                cache_write_tokens=COALESCE(
+                    cache_write_tokens,
+                    (SELECT a.cache_write_tokens FROM request_attempts a
+                     WHERE a.request_id=requests.request_id AND a.status='success'
+                     ORDER BY a.attempt_n DESC LIMIT 1)
+                ),
+                cost=COALESCE(
+                    cost,
+                    (SELECT a.cost FROM request_attempts a
+                     WHERE a.request_id=requests.request_id AND a.status='success'
+                     ORDER BY a.attempt_n DESC LIMIT 1)
+                ),
+                attempts=CASE WHEN attempts=0 THEN (
+                    SELECT COUNT(*) FROM request_attempts a
+                    WHERE a.request_id=requests.request_id
+                ) ELSE attempts END
+            WHERE status='interrupted'
+            """
         )
         await conn.commit()
 
