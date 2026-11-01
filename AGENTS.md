@@ -29,6 +29,10 @@ Windows PowerShell uses `& .venv\Scripts\pytest.exe -q` etc.
 - `tests/` — unit + integration (mock upstream via `httpx.MockTransport`).
 - `docs/ROADMAP.md` — keep updated at the end of each session.
 
+## Working rules
+
+- If a command or install fails for a reason that won't fix itself (network block, HTTP 403, missing permission, no access), stop retrying. Tell the user you need them to run the command or install the thing, and give them the exact command.
+
 ## Conventions
 
 - Scope is **OpenAI-compatible providers only** (no Anthropic/Gemini-native translation).
