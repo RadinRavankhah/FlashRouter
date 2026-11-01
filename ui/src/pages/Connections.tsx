@@ -35,6 +35,8 @@ function ProviderModal({
   const [protocol, setProtocol] = useState(provider?.protocol ?? "openai-chat");
   const [priority, setPriority] = useState(provider?.priority ?? 100);
   const [enabled, setEnabled] = useState(provider?.enabled ?? true);
+  const [cacheMarkers, setCacheMarkers] = useState(provider?.cache_markers ?? "auto");
+  const [cacheTtl, setCacheTtl] = useState(provider?.cache_ttl ?? "");
   const [headers, setHeaders] = useState(JSON.stringify(provider?.headers ?? {}, null, 2));
   const [saving, setSaving] = useState(false);
 
@@ -66,6 +68,8 @@ function ProviderModal({
         headers: parsedHeaders,
         enabled,
         priority: Number(priority) || 100,
+        cache_markers: cacheMarkers,
+        cache_ttl: cacheTtl,
       };
       if (editing && provider) {
         await api.put(`/admin/api/providers/${provider.id}`, payload);
@@ -123,6 +127,27 @@ function ProviderModal({
           <option value="anthropic-messages">Anthropic Messages</option>
         </select>
       </Field>
+      <div className="row">
+        <Field
+          label="Cache markers"
+          hint="Anthropic mode injects cache_control; auto only does so for Anthropic-protocol providers."
+        >
+          <select
+            value={cacheMarkers}
+            onChange={(event) => setCacheMarkers(event.target.value)}
+          >
+            <option value="auto">Auto</option>
+            <option value="anthropic">Anthropic cache_control</option>
+            <option value="none">Never inject</option>
+          </select>
+        </Field>
+        <Field label="Cache TTL" hint="1h writes cost more but survive long agent turns.">
+          <select value={cacheTtl} onChange={(event) => setCacheTtl(event.target.value)}>
+            <option value="">Default (5m)</option>
+            <option value="1h">1 hour</option>
+          </select>
+        </Field>
+      </div>
       <div className="row">
         <Field label="Priority">
           <input
@@ -300,6 +325,8 @@ export default function Connections() {
         headers: provider.headers,
         enabled,
         priority: provider.priority,
+        cache_markers: provider.cache_markers,
+        cache_ttl: provider.cache_ttl,
       });
       refresh();
     } catch (error) {
@@ -410,6 +437,10 @@ export default function Connections() {
                         {provider.enabled ? "enabled" : "disabled"}
                       </Badge>
                       <Badge tone="accent">priority {provider.priority}</Badge>
+                      <Badge tone={provider.cache_markers === "none" ? "muted" : "success"}>
+                        cache {provider.cache_markers}
+                        {provider.cache_ttl ? ` · ${provider.cache_ttl}` : ""}
+                      </Badge>
                     </div>
                     <div className="provider-url">{provider.base_url}</div>
                   </div>

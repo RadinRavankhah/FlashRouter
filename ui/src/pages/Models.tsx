@@ -21,6 +21,7 @@ interface ModelForm {
   price_in: string;
   price_out: string;
   price_cache_in: string;
+  price_cache_write: string;
 }
 
 const EMPTY_FORM: ModelForm = {
@@ -30,6 +31,7 @@ const EMPTY_FORM: ModelForm = {
   price_in: "0",
   price_out: "0",
   price_cache_in: "",
+  price_cache_write: "",
 };
 
 function price(value: number | null): string {
@@ -126,6 +128,8 @@ export default function Models() {
       price_in: String(model.price_in),
       price_out: String(model.price_out),
       price_cache_in: model.price_cache_in === null ? "" : String(model.price_cache_in),
+      price_cache_write:
+        model.price_cache_write === null ? "" : String(model.price_cache_write),
     });
     setEditing(model);
   };
@@ -147,6 +151,7 @@ export default function Models() {
           price_in: numberOrZero(form.price_in),
           price_out: numberOrZero(form.price_out),
           price_cache_in: optionalNumber(form.price_cache_in),
+          price_cache_write: optionalNumber(form.price_cache_write),
         });
         toast("Pricing updated");
       } else {
@@ -157,6 +162,7 @@ export default function Models() {
           price_in: numberOrZero(form.price_in),
           price_out: numberOrZero(form.price_out),
           price_cache_in: optionalNumber(form.price_cache_in),
+          price_cache_write: optionalNumber(form.price_cache_write),
         });
         toast("Model added");
       }
@@ -248,6 +254,7 @@ export default function Models() {
                     <th>Input / 1M</th>
                     <th>Output / 1M</th>
                     <th>Cached / 1M</th>
+                    <th>Cache write / 1M</th>
                     <th>Source</th>
                     <th />
                   </tr>
@@ -264,6 +271,11 @@ export default function Models() {
                       <td>{price(model.price_out)}</td>
                       <td className={model.price_cache_in === null ? "muted" : ""}>
                         {price(model.price_cache_in)}
+                      </td>
+                      <td className={model.price_cache_write === null ? "muted" : ""}>
+                        {model.price_cache_write === null
+                          ? "1.25× input"
+                          : price(model.price_cache_write)}
                       </td>
                       <td className="muted">{model.source}</td>
                       <td>
@@ -389,6 +401,21 @@ export default function Models() {
                 value={form.price_cache_in}
                 onChange={(event) => setForm({ ...form, price_cache_in: event.target.value })}
                 placeholder="same as input"
+              />
+            </Field>
+            <Field
+              label="Cache-write price (USD per 1M tokens)"
+              hint="Leave blank to bill cache writes at 1.25× the input price (Anthropic 5-minute rate)."
+            >
+              <input
+                type="number"
+                min="0"
+                step="0.0001"
+                value={form.price_cache_write}
+                onChange={(event) =>
+                  setForm({ ...form, price_cache_write: event.target.value })
+                }
+                placeholder="1.25× input"
               />
             </Field>
             <p className="muted" style={{ fontSize: 12 }}>

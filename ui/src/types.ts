@@ -7,6 +7,8 @@ export interface Provider {
   headers: Record<string, string>;
   enabled: boolean;
   priority: number;
+  cache_markers: string;
+  cache_ttl: string;
   account_count: number;
   model_count: number;
 }
@@ -61,6 +63,8 @@ export interface ApiKey {
   token_masked: string;
   enabled: boolean;
   allowed_combos: string[];
+  cache_policy: string;
+  cache_ttl: string;
   last_used_at: string | null;
   created_at: string;
 }
@@ -74,6 +78,7 @@ export interface ModelEntry {
   price_in: number;
   price_out: number;
   price_cache_in: number | null;
+  price_cache_write: number | null;
   enabled: boolean;
   source: string;
 }

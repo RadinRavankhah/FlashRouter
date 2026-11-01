@@ -29,6 +29,8 @@ function CreateKeyModal({
   const toast = useToast();
   const [name, setName] = useState("Claude Code");
   const [allowed, setAllowed] = useState<string[]>([]);
+  const [cachePolicy, setCachePolicy] = useState("auto");
+  const [cacheTtl, setCacheTtl] = useState("");
   const [saving, setSaving] = useState(false);
 
   const toggleCombo = (comboName: string) => {
@@ -42,7 +44,12 @@ function CreateKeyModal({
     try {
       const created = await api.post<{ id: number; name: string; token: string }>(
         "/admin/api/keys",
-        { name: name.trim() || "API key", allowed_combos: allowed },
+        {
+          name: name.trim() || "API key",
+          allowed_combos: allowed,
+          cache_policy: cachePolicy,
+          cache_ttl: cacheTtl,
+        },
       );
       onCreated(created.token);
       onClose();
@@ -69,6 +76,24 @@ function CreateKeyModal({
       <Field label="Name" hint="For example: Claude Code, Cursor, a script">
         <input value={name} onChange={(event) => setName(event.target.value)} />
       </Field>
+      <div className="row">
+        <Field
+          label="Prompt caching"
+          hint="Force injects Anthropic cache breakpoints; off avoids cache-write costs for one-off chats."
+        >
+          <select value={cachePolicy} onChange={(event) => setCachePolicy(event.target.value)}>
+            <option value="auto">Auto (follow provider)</option>
+            <option value="force">Force inject</option>
+            <option value="off">Off</option>
+          </select>
+        </Field>
+        <Field label="Cache TTL" hint="1h writes cost more but survive long agent turns.">
+          <select value={cacheTtl} onChange={(event) => setCacheTtl(event.target.value)}>
+            <option value="">Default (5m)</option>
+            <option value="1h">1 hour</option>
+          </select>
+        </Field>
+      </div>
       {combos.length > 0 && (
         <Field label="Allowed combos" hint="Leave empty to allow every combo.">
           <div className="stack">
@@ -121,6 +146,23 @@ export default function Keys() {
         name: key.name,
         enabled,
         allowed_combos: key.allowed_combos,
+        cache_policy: key.cache_policy,
+        cache_ttl: key.cache_ttl,
+      });
+      refresh();
+    } catch (error) {
+      toast(error instanceof ApiError ? error.message : "Update failed", "error");
+    }
+  };
+
+  const updateCache = async (key: ApiKey, policy: string, ttl: string) => {
+    try {
+      await api.put(`/admin/api/keys/${key.id}`, {
+        name: key.name,
+        enabled: key.enabled,
+        allowed_combos: key.allowed_combos,
+        cache_policy: policy,
+        cache_ttl: ttl,
       });
       refresh();
     } catch (error) {
@@ -203,6 +245,7 @@ export default function Keys() {
                   <th>Name</th>
                   <th>Token</th>
                   <th>Enabled</th>
+                  <th>Prompt cache</th>
                   <th>Allowed combos</th>
                   <th>Last used</th>
                   <th></th>
@@ -217,6 +260,29 @@ export default function Keys() {
                     </td>
                     <td>
                       <Toggle checked={key.enabled} onChange={(value) => toggle(key, value)} />
+                    </td>
+                    <td>
+                      <div className="row" style={{ gap: 6 }}>
+                        <select
+                          value={key.cache_policy}
+                          onChange={(event) =>
+                            updateCache(key, event.target.value, key.cache_ttl)
+                          }
+                        >
+                          <option value="auto">auto</option>
+                          <option value="force">force</option>
+                          <option value="off">off</option>
+                        </select>
+                        <select
+                          value={key.cache_ttl}
+                          onChange={(event) =>
+                            updateCache(key, key.cache_policy, event.target.value)
+                          }
+                        >
+                          <option value="">5m</option>
+                          <option value="1h">1h</option>
+                        </select>
+                      </div>
                     </td>
                     <td>
                       {key.allowed_combos.length === 0 ? (
