@@ -116,7 +116,9 @@ docs/ROADMAP.md          # this file
 - `GET/POST /admin/api/models`, `PUT/DELETE /admin/api/models/{id}` (pricing)
 - `GET/POST /admin/api/keys`, `PUT/DELETE /admin/api/keys/{id}`,
   `GET .../keys/{id}/reveal`
-- `GET /admin/api/requests`, `GET /admin/api/requests/{id}`
+- `GET /admin/api/requests` (free-text `q`, status, model substring, endpoint,
+  provider, `key_id`, `account_id`, error type, `from`/`to`, sort, pagination),
+  `GET /admin/api/requests/filters`, `GET /admin/api/requests/{id}`
 - `GET /admin/api/stats` (overview, usage, cache reads, cost, success, timeseries)
 - `GET/PUT /admin/api/settings`
 
@@ -167,7 +169,7 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   - Provider discovery imports model prices when the upstream `/models` payload
     includes them.
   - CLI: run/doctor/backup/restore/reset-admin/version/open + bootstrap launchers.
-  - 83 tests passing; ruff clean; `ui` builds.
+  - 95 tests passing; ruff clean; `ui` builds.
 - **Known gaps / next:**
   - Add more tests (cooldown, admin CRUD, RTK edge cases, restore CLI).
   - No chat↔messages translation; `/v1/responses` and `/v1/messages` are
@@ -231,3 +233,12 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   OpenAI-shaped proxies and automatic for Anthropic. RTK is skipped only when
   markers are injected. Cache writes now default to 2x input, and discovery
   imports cache-write prices when the provider exposes them. 83 tests.
+- (session 10) Requests page search and filtering overhaul. The list endpoint
+  now supports free-text metadata search (`q`, including attempt account/provider/
+  error text), substring model matching, provider, account, error-type, key, and
+  date-range filters, plus `newest`/`oldest`/`slowest`/`cost` sorting.
+  Added `GET /admin/api/requests/filters` for observed filter values and schema v6
+  indexes for the new filter columns. The dashboard gained URL-synced filters,
+  300ms debounced search, filter chips, date presets/custom range, page-size
+  selection, First/Prev/Next/Last pagination, and stale-request cancellation.
+  95 tests.
