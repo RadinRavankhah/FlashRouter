@@ -88,6 +88,7 @@ src/flashrouter/
   providers/presets.py   # built-in OpenAI-compatible presets
   routing/engine.py      # resolve model -> candidates, account selection
   services/engine.py     # orchestration: proxy, fallback, logging, usage
+  services/archive.py    # request export (JSONL/CSV) + archive-then-delete
   services/usage.py      # usage normalization + cost estimate
   savers/rtk.py          # tool_result compression
   storage/database.py    # aiosqlite connect + migrate
@@ -119,6 +120,9 @@ docs/ROADMAP.md          # this file
 - `GET /admin/api/requests` (free-text `q`, status, model substring, endpoint,
   provider, `key_id`, `account_id`, error type, `from`/`to`, sort, pagination),
   `GET /admin/api/requests/filters`, `GET /admin/api/requests/{id}`
+- `GET /admin/api/requests/export` (JSONL/CSV download, same filters),
+  `POST /admin/api/requests/purge` (dry-run by default; archives before deleting),
+  `GET /admin/api/requests/exports/{file}`
 - `GET /admin/api/stats` (overview, usage, cache reads, cost, success, timeseries)
 - `GET/PUT /admin/api/settings`
 
@@ -137,6 +141,35 @@ docs/ROADMAP.md          # this file
 | M8 | Anthropic Messages pass-through (`/v1/messages`, `count_tokens`), presets, hybrid models | done |
 | M9 | Prompt-cache injection, key/provider cache policy, cache affinity, cache-write pricing | done |
 | M10 | Cache-optimized defaults, stable `prompt_cache_key`, 2x write pricing, discovery write prices | done |
+| M11 | Lossless payload capture, request export, archive-then-delete, CLI | done |
+
+## Archiving requests
+
+Stored requests can be exported and removed without losing history:
+
+- `GET /admin/api/requests/export?format=jsonl|csv` (plus the normal list filters)
+  downloads one file; it does not delete anything. The dashboard offers JSONL and
+  CSV as separate downloads.
+- `POST /admin/api/requests/purge` always writes an archive first, then deletes
+  exactly the exported ids. `format=both` writes JSONL and CSV from the same
+  snapshot. `dry_run` defaults to `true`, `before` is required and exclusive, and
+  pending requests are never deleted.
+- Files land in `<data_dir>/exports/` and can be downloaded through
+  `/admin/api/requests/exports/{file}` or moved with the CLI.
+- CLI, usable with the server stopped:
+  `flashrouter requests export --before YYYY-MM-DD [--format jsonl|csv|both]` and
+  `flashrouter requests purge --before YYYY-MM-DD --yes [--format jsonl|csv|both]`.
+
+JSONL is the full-fidelity format: each line is
+`{"request": {...}, "attempts": [...], "payloads": [...], "payloads_included": bool}`.
+Streamed responses store both a readable `response` payload and the exact
+`response_raw` SSE frames. CSV is a flat one-row-per-request summary.
+
+Since stats are computed live from `requests`, purged rows stop contributing to
+all-time totals immediately. New payloads are stored without truncation by default
+(`gateway.payload_max_chars = 0`); set a positive value to cap capture again.
+Deletes reclaim space only after `VACUUM` (off by default in the API, `--vacuum`
+in the CLI).
 
 ## Definition of done
 
@@ -147,7 +180,7 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
 
 ## Status
 
-- **Phase:** M0–M10 complete.
+- **Phase:** M0–M11 complete.
 - **Working now:**
   - New core package (config, storage/migrations, repository, providers presets,
     router, engine, RTK saver, usage).
@@ -168,13 +201,17 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
     `prompt_cache_key` and 15-minute affinity; cache writes default to 2x input.
   - Provider discovery imports model prices when the upstream `/models` payload
     includes them.
-  - CLI: run/doctor/backup/restore/reset-admin/version/open + bootstrap launchers.
-  - 95 tests passing; ruff clean; `ui` builds.
+  - Lossless payload capture (no 200k/64k caps by default; `payload_max_chars`
+    opt-in cap), raw stream capture (`response_raw`), upstream error bodies stored,
+    export/purge API + dashboard dialogs, and `flashrouter requests export|purge`.
+  - CLI: run/doctor/backup/restore/reset-admin/requests/version/open + bootstrap launchers.
+  - 111 tests passing; ruff clean; `ui` builds.
 - **Known gaps / next:**
   - Add more tests (cooldown, admin CRUD, RTK edge cases, restore CLI).
   - No chat↔messages translation; `/v1/responses` and `/v1/messages` are
     pass-through only.
   - Cache affinity is in-memory (15-minute TTL, 1 hour for explicit 1h markers); it resets when the process restarts.
+  - Payloads stored before session 11 remain truncated; recovery is impossible.
   - Version now `0.4.0`; bump to `1.0.0` when accepted.
 
 ## Changelog
@@ -240,5 +277,15 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
   Added `GET /admin/api/requests/filters` for observed filter values and schema v6
   indexes for the new filter columns. The dashboard gained URL-synced filters,
   300ms debounced search, filter chips, date presets/custom range, page-size
-  selection, First/Prev/Next/Last pagination, and stale-request cancellation.
-  95 tests.
+   selection, First/Prev/Next/Last pagination, and stale-request cancellation.
+   95 tests.
+- (session 11) Lossless payloads and request archiving. Removed the 200k payload and
+   64k stream caps by default (new `gateway.payload_max_chars`, 0 = unlimited), store
+   non-stream responses as raw text, record the exact SSE stream as `response_raw`,
+   and persist upstream error bodies. Added `services/archive.py` with a temp-table
+   id snapshot, JSONL/CSV export, archive-before-delete purging (dry-run by default,
+   pending excluded, batched child/request deletes, optional VACUUM), the
+   export/purge/exports admin endpoints, Requests-page Export and Clean up dialogs
+   with separate JSONL/CSV downloads, and `flashrouter requests export|purge`.
+   Clean-up writes both formats from one snapshot before deleting. 111 tests, ruff
+   clean, `ui` builds.

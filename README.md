@@ -388,6 +388,23 @@ and the Anthropic envelope on `/v1/messages`:
 { "type": "error", "error": { "type": "not_found_error", "message": "..." } }
 ```
 
+## Requests and archiving
+
+The dashboard **Requests** page can export the current filtered set as JSONL and
+CSV separately, and **Clean up** archives both formats then deletes requests older
+than a cutoff. Stats are computed live from the request log, so deleted rows stop
+counting immediately.
+
+- The archive is always written before anything is deleted. Files live in
+  `<data_dir>/exports/` and remain downloadable from the dashboard.
+- Pending requests are never deleted. The API defaults to a dry run.
+- JSONL is the full-fidelity format (`request`, `attempts`, and `payloads`
+  including raw stream frames); CSV is a flat one-row-per-request summary.
+  Clean-up writes both from the same request snapshot before deleting.
+- New payloads are stored without truncation by default. Set
+  `gateway.payload_max_chars` (or `FLASHROUTER_PAYLOAD_MAX_CHARS`) to a positive
+  value to cap large prompts/responses again.
+
 ## Configuration
 
 Configuration is optional — providers, accounts, combos, keys and the token-saver
@@ -405,6 +422,7 @@ log_level = "info"
 token_saver = true
 connect_timeout = 10.0
 request_timeout = 300.0
+payload_max_chars = 0   # 0 = store full prompts/responses
 
 [admin]
 token = ""   # optional X-Admin-Token for /admin/api
@@ -425,7 +443,8 @@ used as the data directory.
 
 Environment overrides: `FLASHROUTER_HOST`, `FLASHROUTER_PORT`,
 `FLASHROUTER_LOG_LEVEL`, `FLASHROUTER_DATA_DIR`, `FLASHROUTER_CONFIG`,
-`FLASHROUTER_ADMIN_TOKEN`, `FLASHROUTER_TOKEN_SAVER`.
+`FLASHROUTER_ADMIN_TOKEN`, `FLASHROUTER_TOKEN_SAVER`,
+`FLASHROUTER_PAYLOAD_MAX_CHARS`.
 
 ## CLI
 
@@ -435,6 +454,10 @@ flashrouter doctor --probe # inspect config/storage and test providers
 flashrouter backup         # write a consistent SQLite backup
 flashrouter restore <file> # restore (saves the current DB first)
 flashrouter reset-admin    # delete client keys + settings (--all wipes everything)
+flashrouter requests export --before 2026-01-01   # export without deleting
+flashrouter requests export --before 2026-01-01 --format both
+flashrouter requests purge --before 2026-01-01 --yes  # archive then delete
+flashrouter requests purge --before 2026-01-01 --yes --format both
 flashrouter open           # open the dashboard
 flashrouter version
 ```
