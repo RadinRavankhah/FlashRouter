@@ -64,6 +64,8 @@ class Settings:
     max_retries: int = 2
     connect_timeout: float = 10.0
     request_timeout: float = 300.0
+    # Character cap for stored request/response payloads. 0 means unlimited.
+    payload_max_chars: int = 0
 
     @property
     def database_path(self) -> Path:
@@ -72,6 +74,10 @@ class Settings:
     @property
     def backups_dir(self) -> Path:
         return self.data_dir / "backups"
+
+    @property
+    def exports_dir(self) -> Path:
+        return self.data_dir / "exports"
 
 
 def _coerce_int(value: object, name: str) -> int:
@@ -107,6 +113,10 @@ def _apply_env(settings: Settings) -> None:
             "off",
             "no",
         }
+    if "FLASHROUTER_PAYLOAD_MAX_CHARS" in env:
+        settings.payload_max_chars = _coerce_int(
+            env["FLASHROUTER_PAYLOAD_MAX_CHARS"], "FLASHROUTER_PAYLOAD_MAX_CHARS"
+        )
 
 
 def load_config(path: Path | None = None) -> Settings:
@@ -150,6 +160,10 @@ def load_config(path: Path | None = None) -> Settings:
                 settings.request_timeout = _coerce_float(
                     gateway["request_timeout"], "gateway.request_timeout"
                 )
+            if "payload_max_chars" in gateway:
+                settings.payload_max_chars = _coerce_int(
+                    gateway["payload_max_chars"], "gateway.payload_max_chars"
+                )
 
         # A config file next to data dir implies the data dir lives beside it.
         if "FLASHROUTER_DATA_DIR" not in os.environ and path is None:
@@ -164,3 +178,4 @@ def load_config(path: Path | None = None) -> Settings:
 def ensure_data_dirs(settings: Settings) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.backups_dir.mkdir(parents=True, exist_ok=True)
+    settings.exports_dir.mkdir(parents=True, exist_ok=True)

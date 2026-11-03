@@ -4,16 +4,23 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from flashrouter import __version__
 from flashrouter.errors import bad_request
 from flashrouter.providers.presets import PRESETS, get_preset
 from flashrouter.providers.pricing import extract_model_pricing
+from flashrouter.services.archive import (
+    export_requests,
+    parse_cutoff,
+    purge_requests,
+)
 from flashrouter.storage.repository import TIME_FORMAT
 from flashrouter.transport.headers import build_upstream_headers
 from flashrouter.transport.urls import join_url
@@ -103,6 +110,26 @@ class ModelPriceIn(BaseModel):
 
 class SettingsIn(BaseModel):
     token_saver: bool | None = None
+
+
+class PurgeIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    before: str
+    format: Literal["jsonl", "csv", "both"] = "jsonl"
+    include_payloads: bool = True
+    dry_run: bool = True
+    vacuum: bool = False
+    status: str | None = None
+    model: str | None = None
+    key_id: int | None = None
+    endpoint: str | None = None
+    q: str | None = None
+    provider: str | None = None
+    account_id: int | None = None
+    error_type: str | None = None
+    from_: str | None = Field(None, alias="from")
+    to_: str | None = Field(None, alias="to")
 
 
 # --------------------------------------------------------------------- helpers
@@ -659,6 +686,89 @@ async def list_requests(
 @router.get("/requests/filters")
 async def request_filter_options(request: Request) -> dict[str, Any]:
     return await _repo(request).list_request_filter_options()
+
+
+@router.get("/requests/export")
+async def export_requests_file(
+    request: Request,
+    export_format: Literal["jsonl", "csv"] = Query("jsonl", alias="format"),
+    include_payloads: bool = True,
+    before: str | None = None,
+    status: str | None = None,
+    model: str | None = None,
+    key_id: int | None = None,
+    endpoint: str | None = None,
+    q: str | None = None,
+    provider: str | None = None,
+    account_id: int | None = None,
+    error_type: str | None = None,
+    from_: str | None = Query(None, alias="from"),
+    to_: str | None = Query(None, alias="to"),
+) -> FileResponse:
+    result = await export_requests(
+        _repo(request),
+        request.app.state.settings.exports_dir,
+        fmt=export_format,
+        include_payloads=include_payloads,
+        before=parse_cutoff(before) if before and before.strip() else None,
+        filters={
+            "status": status,
+            "model": model,
+            "key_id": key_id,
+            "endpoint": endpoint,
+            "q": q,
+            "provider": provider,
+            "account_id": account_id,
+            "error_type": error_type,
+            "from_ts": _normalize_timestamp(from_, "from"),
+            "to_ts": _normalize_timestamp(to_, "to"),
+        },
+    )
+    path = Path(result["path"])
+    media_type = "text/csv" if export_format == "csv" else "application/x-ndjson"
+    return FileResponse(path, filename=path.name, media_type=media_type)
+
+
+@router.post("/requests/purge")
+async def purge_requests_endpoint(request: Request, payload: PurgeIn) -> dict[str, Any]:
+    result = await purge_requests(
+        _repo(request),
+        request.app.state.settings.exports_dir,
+        before=parse_cutoff(payload.before),
+        fmt=payload.format,
+        include_payloads=payload.include_payloads,
+        dry_run=payload.dry_run,
+        vacuum=payload.vacuum,
+        filters={
+            "status": payload.status,
+            "model": payload.model,
+            "key_id": payload.key_id,
+            "endpoint": payload.endpoint,
+            "q": payload.q,
+            "provider": payload.provider,
+            "account_id": payload.account_id,
+            "error_type": payload.error_type,
+            "from_ts": _normalize_timestamp(payload.from_, "from"),
+            "to_ts": _normalize_timestamp(payload.to_, "to"),
+        },
+    )
+    return result
+
+
+@router.get("/requests/exports/{filename}")
+async def download_export(request: Request, filename: str) -> FileResponse:
+    if (
+        Path(filename).name != filename
+        or "/" in filename
+        or "\\" in filename
+        or not filename.endswith((".jsonl", ".csv"))
+    ):
+        raise bad_request("Invalid export file", param="filename")
+    path = request.app.state.settings.exports_dir / filename
+    if not path.is_file():
+        raise bad_request("Export not found", param="filename")
+    media_type = "text/csv" if filename.endswith(".csv") else "application/x-ndjson"
+    return FileResponse(path, filename=filename, media_type=media_type)
 
 
 @router.get("/requests/{request_id}")

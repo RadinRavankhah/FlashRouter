@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import secrets
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
+from flashrouter.logging import get_logger
 from flashrouter.storage.database import Database
+
+logger = get_logger()
 
 # Timestamps use SQLite-friendly formatting (space separator, UTC).
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
@@ -742,8 +746,15 @@ class Repository:
                 (request_id, attempt_n, kind, body, now_iso()),
             )
         except Exception:
-            # Never let best-effort payload logging break a request.
-            pass
+            # Best-effort payload logging must not break a request, but a
+            # failure should be visible instead of silently losing data.
+            logger.warning(
+                "payload_write_failed id=%s kind=%s attempt=%s",
+                request_id,
+                kind,
+                attempt_n,
+                exc_info=True,
+            )
 
     async def list_requests(
         self,
@@ -762,6 +773,46 @@ class Repository:
         to_ts: str | None = None,
         sort: str = "newest",
     ) -> dict[str, Any]:
+        clauses, params = self._request_filter_clause(
+            status=status,
+            model=model,
+            key_id=key_id,
+            endpoint=endpoint,
+            q=q,
+            provider=provider,
+            account_id=account_id,
+            error_type=error_type,
+            from_ts=from_ts,
+            to_ts=to_ts,
+        )
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        order = _REQUEST_SORTS.get(sort, _REQUEST_SORTS["newest"])
+        total_row = await self._fetchone(
+            f"SELECT COUNT(*) AS n FROM requests r {where}", tuple(params)
+        )
+        rows = await self._fetchall(
+            f"SELECT * FROM requests r {where} ORDER BY {order} LIMIT ? OFFSET ?",
+            tuple(params) + (limit, offset),
+        )
+        return {
+            "total": int(total_row["n"]) if total_row else 0,
+            "items": [dict(row) for row in rows],
+        }
+
+    def _request_filter_clause(
+        self,
+        *,
+        status: str | None = None,
+        model: str | None = None,
+        key_id: int | None = None,
+        endpoint: str | None = None,
+        q: str | None = None,
+        provider: str | None = None,
+        account_id: int | None = None,
+        error_type: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+    ) -> tuple[list[str], list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
         if status:
@@ -818,19 +869,141 @@ class Repository:
             )
             clauses.append(f"({' OR '.join(search)})")
             params.extend([pattern] * (len(text_columns) + 4))
+        return clauses, params
+
+    async def stage_request_ids(
+        self,
+        *,
+        before: str | None = None,
+        exclude_pending: bool = False,
+        status: str | None = None,
+        model: str | None = None,
+        key_id: int | None = None,
+        endpoint: str | None = None,
+        q: str | None = None,
+        provider: str | None = None,
+        account_id: int | None = None,
+        error_type: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+    ) -> int:
+        """Snapshot matching request ids into a temp table for export/purge."""
+        clauses, params = self._request_filter_clause(
+            status=status,
+            model=model,
+            key_id=key_id,
+            endpoint=endpoint,
+            q=q,
+            provider=provider,
+            account_id=account_id,
+            error_type=error_type,
+            from_ts=from_ts,
+            to_ts=to_ts,
+        )
+        if before:
+            clauses.append("r.created_at < ?")
+            params.append(before)
+        if exclude_pending:
+            clauses.append("r.status <> 'pending'")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        order = _REQUEST_SORTS.get(sort, _REQUEST_SORTS["newest"])
-        total_row = await self._fetchone(
-            f"SELECT COUNT(*) AS n FROM requests r {where}", tuple(params)
+        await self._conn.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS _archive_ids "
+            "(request_id TEXT PRIMARY KEY)"
         )
-        rows = await self._fetchall(
-            f"SELECT * FROM requests r {where} ORDER BY {order} LIMIT ? OFFSET ?",
-            tuple(params) + (limit, offset),
+        await self._conn.execute("DELETE FROM _archive_ids")
+        await self._conn.execute(
+            "INSERT OR IGNORE INTO _archive_ids(request_id) "
+            f"SELECT r.request_id FROM requests r {where}",
+            tuple(params),
         )
-        return {
-            "total": int(total_row["n"]) if total_row else 0,
-            "items": [dict(row) for row in rows],
-        }
+        await self._conn.commit()
+        row = await self._fetchone("SELECT COUNT(*) AS n FROM _archive_ids")
+        return int(row["n"]) if row else 0
+
+    async def iter_staged_requests(
+        self, *, include_payloads: bool = True, batch_size: int = 500
+    ) -> AsyncIterator[list[dict[str, Any]]]:
+        """Yield batches of staged requests with their attempts/payloads."""
+        last_id = 0
+        while True:
+            rows = await self._fetchall(
+                "SELECT r.* FROM requests r "
+                "JOIN _archive_ids a ON a.request_id = r.request_id "
+                "WHERE r.id > ? ORDER BY r.id LIMIT ?",
+                (last_id, batch_size),
+            )
+            if not rows:
+                return
+            ids = [row["request_id"] for row in rows]
+            placeholders = ",".join("?" * len(ids))
+            attempts = await self._fetchall(
+                "SELECT * FROM request_attempts "
+                f"WHERE request_id IN ({placeholders}) "
+                "ORDER BY request_id, attempt_n",
+                tuple(ids),
+            )
+            payloads = (
+                await self._fetchall(
+                    "SELECT * FROM payloads "
+                    f"WHERE request_id IN ({placeholders}) ORDER BY request_id, id",
+                    tuple(ids),
+                )
+                if include_payloads
+                else []
+            )
+            attempts_by_request: dict[str, list[dict[str, Any]]] = {}
+            for attempt in attempts:
+                attempts_by_request.setdefault(attempt["request_id"], []).append(
+                    dict(attempt)
+                )
+            payloads_by_request: dict[str, list[dict[str, Any]]] = {}
+            for payload_row in payloads:
+                payloads_by_request.setdefault(
+                    payload_row["request_id"], []
+                ).append(dict(payload_row))
+            batch = []
+            for row in rows:
+                item = dict(row)
+                item["attempts"] = attempts_by_request.get(row["request_id"], [])
+                item["payloads"] = payloads_by_request.get(row["request_id"], [])
+                batch.append(item)
+            last_id = int(rows[-1]["id"])
+            yield batch
+
+    async def delete_staged_requests(self, batch_size: int = 1000) -> int:
+        """Delete every staged request and its child rows. Returns count."""
+        total = 0
+        while True:
+            rows = await self._fetchall(
+                "SELECT request_id FROM _archive_ids LIMIT ?", (batch_size,)
+            )
+            if not rows:
+                break
+            ids = [row["request_id"] for row in rows]
+            placeholders = ",".join("?" * len(ids))
+            for table in ("payloads", "request_attempts", "usage_records", "requests"):
+                await self._conn.execute(
+                    f"DELETE FROM {table} WHERE request_id IN ({placeholders})",
+                    tuple(ids),
+                )
+            await self._conn.execute(
+                f"DELETE FROM _archive_ids WHERE request_id IN ({placeholders})",
+                tuple(ids),
+            )
+            await self._conn.commit()
+            total += len(ids)
+        return total
+
+    async def clear_staged_requests(self) -> None:
+        await self._conn.execute("DELETE FROM _archive_ids")
+        await self._conn.commit()
+
+    async def vacuum(self) -> None:
+        await self._conn.commit()
+        await self._conn.execute("VACUUM")
+        await self._conn.commit()
+        await self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        await self._conn.commit()
 
     async def list_request_filter_options(self) -> dict[str, Any]:
         providers = [

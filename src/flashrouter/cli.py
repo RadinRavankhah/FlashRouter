@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import shutil
 import socket
 import sqlite3
 import sys
@@ -15,7 +16,14 @@ import uvicorn
 
 from flashrouter import __version__
 from flashrouter.config import ConfigError, Settings, ensure_data_dirs, load_config
+from flashrouter.errors import GatewayError
 from flashrouter.logging import configure_logging
+from flashrouter.services.archive import (
+    export_requests,
+    parse_cutoff,
+    parse_timestamp,
+    purge_requests,
+)
 from flashrouter.storage.database import Database
 from flashrouter.storage.repository import Repository
 
@@ -56,8 +64,79 @@ def _build_parser() -> argparse.ArgumentParser:
     open_cmd = sub.add_parser("open", help="Open the dashboard in a browser")
     open_cmd.add_argument("--config", type=Path, help="Path to config.toml")
 
+    requests_cmd = sub.add_parser("requests", help="Export or purge stored requests")
+    requests_sub = requests_cmd.add_subparsers(dest="requests_command")
+
+    export_cmd = requests_sub.add_parser("export", help="Export requests to a file")
+    _add_request_args(export_cmd, before_required=True)
+    export_cmd.add_argument(
+        "--format",
+        choices=["jsonl", "csv", "both"],
+        default="jsonl",
+        help="Export format (both writes JSONL and CSV)",
+    )
+    export_cmd.add_argument(
+        "--no-payloads",
+        action="store_false",
+        dest="include_payloads",
+        default=True,
+        help="Export metadata only (JSONL)",
+    )
+    export_cmd.add_argument(
+        "--output", type=Path, help="Write the export to this path instead"
+    )
+
+    purge_cmd = requests_sub.add_parser(
+        "purge", help="Export then permanently delete old requests"
+    )
+    _add_request_args(purge_cmd, before_required=True)
+    purge_cmd.add_argument(
+        "--format",
+        choices=["jsonl", "csv", "both"],
+        default="jsonl",
+        help="Archive format (both writes JSONL and CSV)",
+    )
+    purge_cmd.add_argument(
+        "--no-payloads",
+        action="store_false",
+        dest="include_payloads",
+        default=True,
+        help="Archive metadata only (JSONL)",
+    )
+    purge_cmd.add_argument(
+        "--dry-run", action="store_true", help="Show how many requests would be deleted"
+    )
+    purge_cmd.add_argument(
+        "--yes", action="store_true", help="Confirm permanent deletion"
+    )
+    purge_cmd.add_argument(
+        "--vacuum", action="store_true", help="VACUUM the database afterwards"
+    )
+    purge_cmd.add_argument(
+        "--output", type=Path, help="Move the archive into this directory"
+    )
+
     sub.add_parser("version", help="Print the version")
     return parser
+
+
+def _add_request_args(parser: argparse.ArgumentParser, *, before_required: bool) -> None:
+    parser.add_argument("--config", type=Path, help="Path to config.toml")
+    parser.add_argument(
+        "--before",
+        required=before_required,
+        help="Cutoff date (YYYY-MM-DD, UTC) - requests created before it",
+    )
+    parser.add_argument("--status", help="Filter by status")
+    parser.add_argument("--model", help="Filter by requested model (substring)")
+    parser.add_argument("--key-id", type=int, dest="key_id", help="Filter by API key id")
+    parser.add_argument("--account-id", type=int, dest="account_id", help="Filter by account id")
+    parser.add_argument("--endpoint", help="Filter by API endpoint")
+    parser.add_argument("--provider", help="Filter by resolved provider")
+    parser.add_argument("--error-type", dest="error_type", help="Filter by error type")
+    parser.add_argument("--q", help="Free-text search")
+    parser.add_argument("--from", dest="from_date", help="From date (UTC, inclusive)")
+    parser.add_argument("--to", dest="to_date", help="To date (UTC, inclusive)")
 
 
 def _settings(args: argparse.Namespace) -> Settings:
@@ -263,6 +342,140 @@ def _cmd_reset_admin(args: argparse.Namespace) -> int:
     return 0
 
 
+def _request_filters(args: argparse.Namespace) -> dict:
+    return {
+        "status": args.status,
+        "model": args.model,
+        "key_id": args.key_id,
+        "endpoint": args.endpoint,
+        "q": args.q,
+        "provider": args.provider,
+        "account_id": args.account_id,
+        "error_type": args.error_type,
+        "from_ts": parse_timestamp(args.from_date, param="from"),
+        "to_ts": parse_timestamp(args.to_date, param="to", shift_days=1),
+    }
+
+
+def _place_archive(path: Path, output: Path | None, *, as_dir: bool) -> Path:
+    if output is None:
+        return path
+    target = output / path.name if as_dir or output.is_dir() else output
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(path), str(target))
+    return target
+
+
+def _place_archives(
+    result: dict, output: Path | None, *, as_dir: bool
+) -> list[Path]:
+    files = result.get("files") or [result]
+    multiple = len(files) > 1
+    if multiple and output is not None:
+        output.mkdir(parents=True, exist_ok=True)
+    return [
+        _place_archive(Path(item["path"]), output, as_dir=as_dir or multiple)
+        for item in files
+    ]
+
+
+# --------------------------------------------------------------------- requests
+def _cmd_requests(args: argparse.Namespace) -> int:
+    if args.requests_command not in ("export", "purge"):
+        print(
+            "Use 'flashrouter requests export' or 'flashrouter requests purge'.",
+            file=sys.stderr,
+        )
+        return 1
+    settings = _settings(args)
+    ensure_data_dirs(settings)
+    if not settings.database_path.exists():
+        print("No database found.", file=sys.stderr)
+        return 1
+
+    async def _run() -> int:
+        database = Database(settings.database_path)
+        await database.connect()
+        try:
+            await database.migrate()
+            repo = Repository(database)
+            before = parse_cutoff(args.before)
+            filters = _request_filters(args)
+            if args.requests_command == "export":
+                result = await export_requests(
+                    repo,
+                    settings.exports_dir,
+                    fmt=args.format,
+                    include_payloads=args.include_payloads,
+                    before=before,
+                    filters=filters,
+                )
+                paths = _place_archives(result, args.output, as_dir=False)
+                joined = ", ".join(str(path) for path in paths)
+                print(
+                    f"Exported {result['exported']} requests to {joined} "
+                    f"({result['bytes']} bytes)"
+                )
+                return 0
+
+            if args.dry_run:
+                result = await purge_requests(
+                    repo,
+                    settings.exports_dir,
+                    before=before,
+                    fmt=args.format,
+                    include_payloads=args.include_payloads,
+                    dry_run=True,
+                    filters=filters,
+                )
+                print(f"{result['matched']} requests match. Nothing deleted (--dry-run).")
+                return 0
+
+            if not args.yes:
+                result = await purge_requests(
+                    repo,
+                    settings.exports_dir,
+                    before=before,
+                    fmt=args.format,
+                    include_payloads=args.include_payloads,
+                    dry_run=True,
+                    filters=filters,
+                )
+                print(
+                    f"{result['matched']} requests match. "
+                    "Re-run with --yes to archive and delete them."
+                )
+                return 1
+
+            result = await purge_requests(
+                repo,
+                settings.exports_dir,
+                before=before,
+                fmt=args.format,
+                include_payloads=args.include_payloads,
+                dry_run=False,
+                vacuum=args.vacuum,
+                filters=filters,
+            )
+            paths = _place_archives(result, args.output, as_dir=True)
+            joined = ", ".join(str(path) for path in paths)
+            print(
+                f"Exported {result['exported']} then deleted "
+                f"{result['deleted']} requests. Archive: {joined}"
+            )
+            if result["vacuumed"]:
+                print("Database vacuumed.")
+            return 0
+        finally:
+            await database.close()
+
+    try:
+        return asyncio.run(_run())
+    except GatewayError as exc:
+        print(f"Error: {exc.message}", file=sys.stderr)
+        return 1
+
+
 def _cmd_open(args: argparse.Namespace) -> int:
     settings = _settings(args)
     url = _dashboard_url(settings)
@@ -292,6 +505,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_restore(args)
         if args.command == "reset-admin":
             return _cmd_reset_admin(args)
+        if args.command == "requests":
+            return _cmd_requests(args)
         if args.command == "open":
             return _cmd_open(args)
         if args.command == "version":

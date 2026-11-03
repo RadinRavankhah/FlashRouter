@@ -42,8 +42,7 @@ from flashrouter.transport.headers import (
 )
 from flashrouter.transport.urls import join_url
 
-PAYLOAD_LIMIT = 200_000
-STREAM_CAPTURE_LIMIT = 65_536
+PAYLOAD_LIMIT = 0
 _READ_CHUNK = 65_536
 
 
@@ -56,14 +55,18 @@ def _cache_key_rejected(text: str) -> bool:
     )
 
 
+def _clip(text: str, limit: int = PAYLOAD_LIMIT) -> str:
+    if limit > 0 and len(text) > limit:
+        return text[:limit] + "...(truncated)"
+    return text
+
+
 def _dump(value: Any, limit: int = PAYLOAD_LIMIT) -> str:
     try:
         text = json.dumps(value, ensure_ascii=False)
     except (TypeError, ValueError):
         text = str(value)
-    if len(text) > limit:
-        text = text[:limit] + "...(truncated)"
-    return text
+    return _clip(text, limit)
 
 
 def _classify(status: int) -> tuple[bool, bool, str]:
@@ -158,13 +161,14 @@ class _SseAccumulator:
 
     def __init__(self) -> None:
         self._buffer = ""
+        self.raw = bytearray()
         self.text = ""
         self.usage: Usage = Usage()
         self.finish_reason: str | None = None
         self.stream_error: str | None = None
-        self._truncated = False
 
     def feed(self, chunk: bytes) -> None:
+        self.raw.extend(chunk)
         self._buffer += chunk.decode("utf-8", errors="ignore")
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
@@ -190,11 +194,8 @@ class _SseAccumulator:
         self._handle_anthropic(payload)
 
     def _append_text(self, text: str) -> None:
-        if not text or self._truncated:
-            return
-        self.text += text
-        if len(self.text) >= STREAM_CAPTURE_LIMIT:
-            self._truncated = True
+        if text:
+            self.text += text
 
     def _handle_openai(self, payload: dict[str, Any]) -> None:
         choices = payload.get("choices")
@@ -254,6 +255,7 @@ class Engine:
         self._rr: dict[int, int] = {}
         self._affinity: dict[str, tuple[float, int, int]] = {}
         self._cache_key_unsupported: set[int] = set()
+        self._payload_limit = max(0, settings.payload_max_chars)
 
     # ------------------------------------------------------------------ public
     async def handle(
@@ -285,7 +287,11 @@ class Engine:
             stream=stream,
             endpoint=endpoint,
         )
-        await self._repo.add_payload(request_id=request_id, kind="incoming", body=_dump(body))
+        await self._repo.add_payload(
+            request_id=request_id,
+            kind="incoming",
+            body=_dump(body, self._payload_limit),
+        )
 
         if key and key.get("allowed_combos"):
             allowed = key["allowed_combos"]
@@ -471,7 +477,7 @@ class Engine:
             request_id=request_id,
             attempt_n=attempt_n,
             kind="outgoing",
-            body=_dump(outbound),
+            body=_dump(outbound, self._payload_limit),
         )
 
         url = join_url(candidate.base_url, endpoint, query)
@@ -514,7 +520,7 @@ class Engine:
                 request_id=request_id,
                 attempt_n=attempt_n,
                 kind="outgoing",
-                body=_dump(payload),
+                body=_dump(payload, self._payload_limit),
             )
             return await self._client.send(build_request(payload), stream=stream), None
 
@@ -534,7 +540,14 @@ class Engine:
                 else:
                     error_text = response.content.decode("utf-8", errors="replace")
             await self._handle_http_error(
-                response.status_code, error_text, candidate, account, attempt_id, dialect
+                response.status_code,
+                error_text,
+                candidate,
+                account,
+                request_id,
+                attempt_id,
+                attempt_n,
+                dialect,
             )
             return None
         if cache_pin and affinity_key:
@@ -563,6 +576,7 @@ class Engine:
             )
 
         content = response.content
+        raw_text = content.decode("utf-8", errors="replace")
         try:
             payload = json.loads(content)
         except (ValueError, TypeError):
@@ -577,7 +591,10 @@ class Engine:
         )
         duration_ms = int((time.perf_counter() - started) * 1000)
         await self._repo.add_payload(
-            request_id=request_id, attempt_n=attempt_n, kind="response", body=_dump(payload)
+            request_id=request_id,
+            attempt_n=attempt_n,
+            kind="response",
+            body=_clip(raw_text, self._payload_limit),
         )
         await self._repo.finish_attempt(
             attempt_id,
@@ -639,11 +656,19 @@ class Engine:
         text: str,
         candidate: Candidate,
         account: dict[str, Any],
+        request_id: str,
         attempt_id: int,
+        attempt_n: int,
         dialect: str | None = None,
     ) -> None:
         retryable, cooldown, error_type = _classify(status)
         message = _upstream_message(text, dialect, status)
+        await self._repo.add_payload(
+            request_id=request_id,
+            attempt_n=attempt_n,
+            kind="response",
+            body=_clip(text, self._payload_limit),
+        )
         if cooldown:
             await self._repo.cooldown_account(
                 account["id"], int(account.get("cooldown_seconds", 60)), message
@@ -793,7 +818,17 @@ class Engine:
                             "cache_read_tokens": usage.cache_read_tokens,
                             "cache_write_tokens": usage.cache_write_tokens,
                         },
-                    }
+                    },
+                    self._payload_limit,
+                ),
+            )
+            await self._repo.add_payload(
+                request_id=request_id,
+                attempt_n=attempt_n,
+                kind="response_raw",
+                body=_clip(
+                    accumulator.raw.decode("utf-8", errors="replace"),
+                    self._payload_limit,
                 ),
             )
         except Exception:

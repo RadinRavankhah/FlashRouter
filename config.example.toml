@@ -17,6 +17,9 @@ token_saver = true
 # eligible account or combo target.
 connect_timeout = 10.0
 request_timeout = 300.0
+# Character cap for stored request/response payloads. 0 keeps everything,
+# including full prompts, responses, and raw SSE streams.
+payload_max_chars = 0
 
 [admin]
 # Optional: require this token in the X-Admin-Token header for /admin/api.
