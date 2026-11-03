@@ -3,20 +3,42 @@
 from __future__ import annotations
 
 import shutil
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 from flashrouter import __version__
 from flashrouter.errors import bad_request
 from flashrouter.providers.presets import PRESETS, get_preset
 from flashrouter.providers.pricing import extract_model_pricing
+from flashrouter.storage.repository import TIME_FORMAT
 from flashrouter.transport.headers import build_upstream_headers
 from flashrouter.transport.urls import join_url
 
 router = APIRouter(prefix="/admin/api")
+
+
+def _normalize_timestamp(value: str | None, param: str) -> str | None:
+    if value is None or not value.strip():
+        return None
+    text = value.strip()
+    try:
+        if len(text) == 10:
+            parsed = datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=UTC)
+            if param == "to":
+                parsed += timedelta(days=1)
+        else:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            else:
+                parsed = parsed.astimezone(UTC)
+    except ValueError as exc:
+        raise bad_request("Invalid timestamp", param=param) from exc
+    return parsed.strftime(TIME_FORMAT)
 
 
 # --------------------------------------------------------------------- schemas
@@ -608,6 +630,13 @@ async def list_requests(
     model: str | None = None,
     key_id: int | None = None,
     endpoint: str | None = None,
+    q: str | None = None,
+    provider: str | None = None,
+    account_id: int | None = None,
+    error_type: str | None = None,
+    from_: str | None = Query(None, alias="from"),
+    to_: str | None = Query(None, alias="to"),
+    sort: str = "newest",
 ) -> dict[str, Any]:
     limit = max(1, min(limit, 500))
     return await _repo(request).list_requests(
@@ -617,7 +646,19 @@ async def list_requests(
         model=model,
         key_id=key_id,
         endpoint=endpoint,
+        q=q,
+        provider=provider,
+        account_id=account_id,
+        error_type=error_type,
+        from_ts=_normalize_timestamp(from_, "from"),
+        to_ts=_normalize_timestamp(to_, "to"),
+        sort=sort,
     )
+
+
+@router.get("/requests/filters")
+async def request_filter_options(request: Request) -> dict[str, Any]:
+    return await _repo(request).list_request_filter_options()
 
 
 @router.get("/requests/{request_id}")

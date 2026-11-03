@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 MIGRATIONS: dict[int, str] = {
     1: """
@@ -191,5 +191,12 @@ MIGRATIONS: dict[int, str] = {
     ALTER TABLE keys ADD COLUMN cache_policy TEXT NOT NULL DEFAULT 'auto';
     ALTER TABLE keys ADD COLUMN cache_ttl TEXT NOT NULL DEFAULT '';
     ALTER TABLE models ADD COLUMN price_cache_write REAL;
+    """,
+    6: """
+    CREATE INDEX IF NOT EXISTS idx_requests_endpoint ON requests(endpoint);
+    CREATE INDEX IF NOT EXISTS idx_requests_key ON requests(key_id);
+    CREATE INDEX IF NOT EXISTS idx_requests_provider ON requests(resolved_provider);
+    CREATE INDEX IF NOT EXISTS idx_requests_error_type ON requests(error_type);
+    CREATE INDEX IF NOT EXISTS idx_attempts_account ON request_attempts(account_id);
     """,
 }

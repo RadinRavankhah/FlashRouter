@@ -17,6 +17,19 @@ def now_iso() -> str:
     return datetime.now(UTC).strftime(TIME_FORMAT)
 
 
+def _like_pattern(term: str) -> str:
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+_REQUEST_SORTS = {
+    "newest": "r.id DESC",
+    "oldest": "r.id ASC",
+    "slowest": "r.duration_ms DESC, r.id DESC",
+    "cost": "r.cost DESC, r.id DESC",
+}
+
+
 def _decode_json(value: str | None, default: Any) -> Any:
     if not value:
         return default
@@ -741,32 +754,128 @@ class Repository:
         model: str | None = None,
         key_id: int | None = None,
         endpoint: str | None = None,
+        q: str | None = None,
+        provider: str | None = None,
+        account_id: int | None = None,
+        error_type: str | None = None,
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        sort: str = "newest",
     ) -> dict[str, Any]:
-        clauses = []
+        clauses: list[str] = []
         params: list[Any] = []
         if status:
-            clauses.append("status=?")
+            clauses.append("r.status=?")
             params.append(status)
         if model:
-            clauses.append("requested_model=?")
-            params.append(model)
+            clauses.append("r.requested_model LIKE ? ESCAPE '\\'")
+            params.append(_like_pattern(model))
         if key_id is not None:
-            clauses.append("key_id=?")
+            clauses.append("r.key_id=?")
             params.append(key_id)
         if endpoint:
-            clauses.append("endpoint=?")
+            clauses.append("r.endpoint=?")
             params.append(endpoint)
+        if provider:
+            clauses.append("r.resolved_provider=?")
+            params.append(provider)
+        if account_id is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM request_attempts a "
+                "WHERE a.request_id = r.request_id AND a.account_id=?)"
+            )
+            params.append(account_id)
+        if error_type:
+            clauses.append("r.error_type=?")
+            params.append(error_type)
+        if from_ts:
+            clauses.append("r.created_at >= ?")
+            params.append(from_ts)
+        if to_ts:
+            clauses.append("r.created_at < ?")
+            params.append(to_ts)
+        if q:
+            pattern = _like_pattern(q)
+            text_columns = (
+                "request_id",
+                "requested_model",
+                "resolved_model",
+                "resolved_provider",
+                "key_name",
+                "error_type",
+                "error_message",
+            )
+            search = [
+                f"r.{column} LIKE ? ESCAPE '\\'" for column in text_columns
+            ]
+            search.append(
+                "EXISTS (SELECT 1 FROM request_attempts a "
+                "WHERE a.request_id = r.request_id AND ("
+                "a.provider_name LIKE ? ESCAPE '\\' OR "
+                "a.account_name LIKE ? ESCAPE '\\' OR "
+                "a.error_type LIKE ? ESCAPE '\\' OR "
+                "a.error_message LIKE ? ESCAPE '\\'))"
+            )
+            clauses.append(f"({' OR '.join(search)})")
+            params.extend([pattern] * (len(text_columns) + 4))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        order = _REQUEST_SORTS.get(sort, _REQUEST_SORTS["newest"])
         total_row = await self._fetchone(
-            f"SELECT COUNT(*) AS n FROM requests {where}", tuple(params)
+            f"SELECT COUNT(*) AS n FROM requests r {where}", tuple(params)
         )
         rows = await self._fetchall(
-            f"SELECT * FROM requests {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM requests r {where} ORDER BY {order} LIMIT ? OFFSET ?",
             tuple(params) + (limit, offset),
         )
         return {
             "total": int(total_row["n"]) if total_row else 0,
             "items": [dict(row) for row in rows],
+        }
+
+    async def list_request_filter_options(self) -> dict[str, Any]:
+        providers = [
+            row["resolved_provider"]
+            for row in await self._fetchall(
+                "SELECT DISTINCT resolved_provider FROM requests "
+                "WHERE resolved_provider IS NOT NULL AND resolved_provider <> '' "
+                "ORDER BY resolved_provider"
+            )
+        ]
+        endpoints = [
+            row["endpoint"]
+            for row in await self._fetchall(
+                "SELECT DISTINCT endpoint FROM requests "
+                "WHERE endpoint IS NOT NULL AND endpoint <> '' ORDER BY endpoint"
+            )
+        ]
+        error_types = [
+            row["error_type"]
+            for row in await self._fetchall(
+                "SELECT DISTINCT error_type FROM requests "
+                "WHERE error_type IS NOT NULL AND error_type <> '' ORDER BY error_type"
+            )
+        ]
+        keys = [
+            dict(row)
+            for row in await self._fetchall(
+                "SELECT key_id, MAX(key_name) AS key_name FROM requests "
+                "WHERE key_id IS NOT NULL GROUP BY key_id ORDER BY key_name"
+            )
+        ]
+        accounts = [
+            dict(row)
+            for row in await self._fetchall(
+                "SELECT account_id, MAX(account_name) AS account_name "
+                "FROM request_attempts WHERE account_id IS NOT NULL "
+                "GROUP BY account_id ORDER BY account_name"
+            )
+        ]
+        return {
+            "providers": providers,
+            "endpoints": endpoints,
+            "error_types": error_types,
+            "keys": keys,
+            "accounts": accounts,
         }
 
     async def get_request(self, request_id: str) -> dict[str, Any] | None:
