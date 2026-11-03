@@ -86,18 +86,24 @@ export interface ModelEntry {
 export interface RequestSummary {
   request_id: string;
   created_at: string;
+  finished_at: string | null;
+  key_id: number | null;
+  key_name: string | null;
   requested_model: string;
   resolved_provider: string | null;
   resolved_model: string | null;
   endpoint: string;
   status: string;
   http_status: number | null;
+  error_type: string | null;
+  error_message: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
   cache_read_tokens: number | null;
   cache_write_tokens: number | null;
   cost: number | null;
   duration_ms: number | null;
+  ttft_ms: number | null;
   stream: number;
   attempts: number;
 }
