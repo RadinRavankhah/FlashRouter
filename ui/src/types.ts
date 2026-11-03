@@ -186,6 +186,34 @@ export interface Stats {
   counts: { providers: number; accounts: number; combos: number; keys: number };
 }
 
+export interface ArchiveFile {
+  format: string;
+  file: string;
+  path: string;
+  bytes: number;
+  count: number;
+}
+
+export interface PurgePreview {
+  matched: number;
+  before: string;
+  format: string;
+  dry_run: true;
+}
+
+export interface PurgeResult {
+  matched: number;
+  exported: number;
+  deleted: number;
+  format: string;
+  bytes: number;
+  file: string;
+  path: string;
+  files: ArchiveFile[];
+  vacuumed: boolean;
+  dry_run: false;
+}
+
 export interface Health {
   version: string;
   database: string;

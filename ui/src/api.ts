@@ -45,6 +45,24 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function download(path: string): Promise<Blob> {
+  const headers = new Headers();
+  const token = getAdminToken();
+  if (token) headers.set("X-Admin-Token", token);
+  const response = await fetch(path, { headers });
+  if (!response.ok) {
+    let message = response.statusText;
+    try {
+      const payload = await response.json();
+      message = payload?.error?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(response.status, message);
+  }
+  return response.blob();
+}
+
 export const api = {
   get: <T>(path: string, init?: RequestInit) => request<T>(path, init),
   post: <T>(path: string, body?: unknown) =>
@@ -52,4 +70,5 @@ export const api = {
   put: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PUT", body: body === undefined ? undefined : JSON.stringify(body) }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  download,
 };

@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, RefreshCw, Search, X } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  RefreshCw,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { api } from "../api";
 import {
   Button,
@@ -16,6 +24,11 @@ import {
   useToast,
 } from "../components";
 import type { RequestSummary } from "../types";
+import {
+  ExportDialog,
+  PurgeDialog,
+  type RequestFilters,
+} from "./RequestArchive";
 
 const PAGE_SIZES = [25, 50, 100, 200];
 const RANGE_PRESETS = [
@@ -60,6 +73,8 @@ export default function Requests() {
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [options, setOptions] = useState<FilterOptions | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [purgeOpen, setPurgeOpen] = useState(false);
 
   const q = searchParams.get("q") ?? "";
   const status = searchParams.get("status") ?? "";
@@ -308,15 +323,41 @@ export default function Requests() {
   const start = total === 0 ? 0 : offset + 1;
   const end = Math.min(offset + items.length, total);
 
+  const filters = useMemo<RequestFilters>(() => {
+    const result: RequestFilters = {};
+    if (q) result.q = q;
+    if (status) result.status = status;
+    if (endpoint) result.endpoint = endpoint;
+    if (provider) result.provider = provider;
+    if (keyId) result.key_id = keyId;
+    if (accountId) result.account_id = accountId;
+    if (errorType) result.error_type = errorType;
+    if (from) result.from = from;
+    if (to) result.to = to;
+    return result;
+  }, [accountId, endpoint, errorType, from, keyId, provider, q, status, to]);
+
   return (
     <>
       <PageHeader
         title="Requests"
         subtitle="Every dispatched request, its attempts and fallback history."
         actions={
-          <Button onClick={() => setReloadKey((value) => value + 1)}>
-            <RefreshCw size={15} /> Refresh
-          </Button>
+          <div className="row">
+            <Button onClick={() => setExportOpen(true)} disabled={total === 0}>
+              <Download size={15} /> Export
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => setPurgeOpen(true)}
+              disabled={total === 0}
+            >
+              <Trash2 size={15} /> Clean up
+            </Button>
+            <Button onClick={() => setReloadKey((value) => value + 1)}>
+              <RefreshCw size={15} /> Refresh
+            </Button>
+          </div>
         }
       />
 
@@ -630,6 +671,21 @@ export default function Requests() {
           </>
         )}
       </div>
+
+      {exportOpen && (
+        <ExportDialog
+          onClose={() => setExportOpen(false)}
+          filters={filters}
+          total={total}
+        />
+      )}
+      {purgeOpen && (
+        <PurgeDialog
+          onClose={() => setPurgeOpen(false)}
+          filters={filters}
+          onDone={() => setReloadKey((value) => value + 1)}
+        />
+      )}
     </>
   );
 }

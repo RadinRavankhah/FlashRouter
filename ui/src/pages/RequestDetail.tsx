@@ -26,13 +26,28 @@ function pretty(body: string): string {
 }
 
 function PayloadBlock({ label, body }: { label: string; body: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const shown = pretty(body);
+  const large = shown.length > 20_000;
   return (
     <div>
       <div className="code-head">
         <span>{label}</span>
-        <CopyButton value={body} />
+        <div className="row">
+          {large && (
+            <button className="btn btn-ghost btn-sm" onClick={() => setExpanded((v) => !v)}>
+              {expanded ? "Collapse" : "Expand"}
+            </button>
+          )}
+          <CopyButton value={body} />
+        </div>
       </div>
-      <pre className="code-block payload-block">{pretty(body)}</pre>
+      <pre
+        className="code-block payload-block"
+        style={large && !expanded ? { maxHeight: 320, overflow: "auto" } : undefined}
+      >
+        {shown}
+      </pre>
     </div>
   );
 }
@@ -58,6 +73,7 @@ export default function RequestDetail() {
   const incoming = record.payloads.filter((payload) => payload.kind === "incoming");
   const outgoing = record.payloads.filter((payload) => payload.kind === "outgoing");
   const responses = record.payloads.filter((payload) => payload.kind === "response");
+  const rawResponses = record.payloads.filter((payload) => payload.kind === "response_raw");
 
   return (
     <>
@@ -179,6 +195,13 @@ export default function RequestDetail() {
           <PayloadBlock
             key={payload.id}
             label={`Response (attempt ${payload.attempt_n ?? 1})`}
+            body={payload.body}
+          />
+        ))}
+        {rawResponses.map((payload) => (
+          <PayloadBlock
+            key={payload.id}
+            label={`Raw stream (attempt ${payload.attempt_n ?? 1})`}
             body={payload.body}
           />
         ))}
