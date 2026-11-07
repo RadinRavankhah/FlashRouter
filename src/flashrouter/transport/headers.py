@@ -41,6 +41,40 @@ RESPONSE_STRIP_ALWAYS = HOP_BY_HOP_HEADERS | {
     "set-cookie2",
 }
 
+CACHE_HEADERS = {"cache-control", "pragma"}
+
+
+def _cache_beta_tokens(value: str) -> str:
+    """Drop prompt-caching beta flags while keeping unrelated beta features."""
+    tokens = [
+        token.strip()
+        for token in value.split(",")
+        if token.strip() and not token.strip().lower().startswith("prompt-caching")
+    ]
+    return ", ".join(tokens)
+
+
+def _outbound_header(
+    name: str,
+    value: str,
+    *,
+    allow_cache_headers: bool,
+    from_client: bool = False,
+) -> str | None:
+    lowered = name.lower()
+    if lowered in CLIENT_FORBIDDEN_HEADERS:
+        return None
+    if from_client and lowered == "x-api-key":
+        return None
+    if lowered.startswith("x-flashrouter-"):
+        return None
+    if not allow_cache_headers:
+        if lowered in CACHE_HEADERS:
+            return None
+        if lowered == "anthropic-beta":
+            return _cache_beta_tokens(value) or None
+    return value
+
 
 def build_upstream_headers(
     extra_headers: Mapping[str, str] | None,
@@ -49,6 +83,7 @@ def build_upstream_headers(
     stream: bool,
     dialect: str | None = None,
     incoming: Mapping[str, str] | None = None,
+    allow_cache_headers: bool = True,
 ) -> dict[str, str]:
     """Build outbound headers.
 
@@ -57,24 +92,38 @@ def build_upstream_headers(
     sends the account secret as both ``x-api-key`` and ``Authorization`` so the
     same provider entry works with native Anthropic (x-api-key) and
     Anthropic-compatible aggregators (Bearer).
+
+    ``allow_cache_headers=False`` removes cache-related HTTP headers so a
+    per-model ``off`` policy leaves no cache hints in the upstream request.
     """
     headers: dict[str, str] = {}
     lowered: set[str] = set()
     for name, value in (extra_headers or {}).items():
         if name.lower() in CLIENT_FORBIDDEN_HEADERS:
             continue
-        headers[name] = value
+        kept = _outbound_header(
+            name, value, allow_cache_headers=allow_cache_headers
+        )
+        if kept is None:
+            continue
+        headers[name] = kept
         lowered.add(name.lower())
 
     # Client headers are only forwarded from a small allowlist. Provider
     # configuration wins over anything the client sent.
     for name, value in (incoming or {}).items():
         lowered_name = name.lower()
-        if lowered_name in CLIENT_FORBIDDEN_HEADERS or lowered_name == "x-api-key":
-            continue
         if lowered_name in lowered:
             continue
-        headers[name] = value
+        kept = _outbound_header(
+            name,
+            value,
+            allow_cache_headers=allow_cache_headers,
+            from_client=True,
+        )
+        if kept is None:
+            continue
+        headers[name] = kept
         lowered.add(lowered_name)
 
     headers["Content-Type"] = "application/json"

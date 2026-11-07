@@ -44,6 +44,13 @@ def _key(client, **extra) -> dict:
     return client.post("/admin/api/keys", json={"name": "k", **extra}).json()
 
 
+def _model(client, provider: dict, *, model: str, **extra) -> dict:
+    return client.post(
+        "/admin/api/models",
+        json={"provider_id": provider["id"], "model": model, **extra},
+    ).json()
+
+
 def _markers(body: dict) -> list[dict]:
     found: list[dict] = []
     for message in body.get("messages") or []:
@@ -244,8 +251,174 @@ def test_openai_cache_can_be_disabled_per_key(settings: Path):
             },
         )
         assert response.status_code == 200, response.text
+        assert _markers(captured["body"]) == []
+
+
+def test_model_policy_off_scrubs_body_and_headers(settings: Path):
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        captured["headers"] = {
+            name.lower(): value for name, value in request.headers.items()
+        }
+        return httpx.Response(200, json=anthropic_message())
+
+    client, _ = build_client(settings, handler)
+    with client:
+        provider = _provider(
+            client,
+            name="claude",
+            base_url="https://claude.test/v1",
+            protocol="anthropic-messages",
+            headers={
+                "Cache-Control": "max-age=60",
+                "Pragma": "no-cache",
+                "x-flashrouter-cache": "force",
+            },
+        )
+        _account(client, provider)
+        _model(client, provider, model="claude-haiku", cache_policy="off")
+        _combo(client, provider, model="claude-haiku", name="coding")
+        key = _key(client, cache_policy="force")
+
+        response = client.post(
+            "/v1/messages",
+            headers={
+                "x-api-key": key["token"],
+                "anthropic-beta": "prompt-caching-2024-07-31, tools-2024-04-04",
+            },
+            json={
+                "model": "coding",
+                "max_tokens": 64,
+                "prompt_cache_key": "client-key",
+                "cache_control": CC,
+                "system": [{"type": "text", "text": "sys", "cache_control": CC}],
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert response.status_code == 200, response.text
+        body = captured["body"]
+        headers = captured["headers"]
+        assert isinstance(body, dict)
+        assert isinstance(headers, dict)
+        assert _markers(body) == []
+        assert "cache_control" not in body
+        assert "prompt_cache_key" not in body
+        assert "cache-control" not in headers
+        assert "pragma" not in headers
+        assert "x-flashrouter-cache" not in headers
+        assert headers["anthropic-beta"] == "tools-2024-04-04"
+
+
+def test_model_policy_off_applies_to_catalog_route(settings: Path):
+    captured: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=chat_completion())
+
+    client, _ = build_client(settings, handler)
+    with client:
+        provider = _provider(
+            client,
+            name="chat",
+            base_url="https://chat.test/v1",
+            protocol="openai-chat",
+        )
+        _account(client, provider)
+        _model(client, provider, model="gpt", cache_policy="off")
+        key = _key(client)
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key['token']}"},
+            json={
+                "model": "gpt",
+                "prompt_cache_key": "client-key",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert response.status_code == 200, response.text
         assert "prompt_cache_key" not in captured["body"]
         assert _markers(captured["body"]) == []
+
+
+def test_model_policy_off_applies_to_provider_prefix_route(settings: Path):
+    captured: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=chat_completion())
+
+    client, _ = build_client(settings, handler)
+    with client:
+        provider = _provider(
+            client,
+            name="chat",
+            base_url="https://chat.test/v1",
+            protocol="openai-chat",
+        )
+        _account(client, provider)
+        _model(client, provider, model="gpt", cache_policy="off")
+        key = _key(client)
+
+        response = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key['token']}"},
+            json={
+                "model": "chat/gpt",
+                "prompt_cache_key": "client-key",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert "prompt_cache_key" not in captured["body"]
+        assert _markers(captured["body"]) == []
+
+
+def test_model_cache_settings_are_exposed_and_updated(settings: Path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=chat_completion())
+
+    client, _ = build_client(settings, handler)
+    with client:
+        provider = _provider(
+            client,
+            name="chat",
+            base_url="https://chat.test/v1",
+            protocol="openai-chat",
+        )
+        created = _model(
+            client,
+            provider,
+            model="gpt",
+            cache_policy="off",
+            cache_ttl="1h",
+        )
+        listed = client.get("/admin/api/models").json()
+        entry = next(model for model in listed if model["id"] == created["id"])
+        assert entry["cache_policy"] == "off"
+        assert entry["cache_ttl"] == "1h"
+
+        response = client.put(
+            f"/admin/api/models/{created['id']}",
+            json={
+                "price_in": 1,
+                "price_out": 2,
+                "cache_policy": "force",
+                "cache_ttl": "5m",
+            },
+        )
+        assert response.status_code == 200, response.text
+        updated = next(
+            model
+            for model in client.get("/admin/api/models").json()
+            if model["id"] == created["id"]
+        )
+        assert updated["cache_policy"] == "force"
+        assert updated["cache_ttl"] == "5m"
+
 
 
 def test_prompt_cache_key_is_retried_without_on_upstream_400(settings: Path):

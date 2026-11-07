@@ -20,6 +20,8 @@ class Candidate:
     headers: dict[str, str] = field(default_factory=dict)
     cache_markers: str = "auto"
     cache_ttl: str = ""
+    model_cache_policy: str = "auto"
+    model_cache_ttl: str = ""
 
 
 def _headers(value: Any) -> dict[str, str]:
@@ -63,6 +65,8 @@ class Router:
                     headers=_headers(t.get("headers")),
                     cache_markers=t.get("cache_markers") or "auto",
                     cache_ttl=t.get("cache_ttl") or "",
+                    model_cache_policy=t.get("model_cache_policy") or "auto",
+                    model_cache_ttl=t.get("model_cache_ttl") or "",
                 )
                 for t in targets
             ]
@@ -74,6 +78,9 @@ class Router:
             prefix, rest = model.split("/", 1)
             provider = await self._repo.find_provider_by_name(prefix)
             if provider and provider["enabled"] and rest:
+                model_cache_policy, model_cache_ttl = await self._repo.get_model_cache(
+                    provider["id"], rest
+                )
                 return [
                     Candidate(
                         provider_id=provider["id"],
@@ -84,6 +91,8 @@ class Router:
                         headers=_headers(provider.get("headers")),
                         cache_markers=provider.get("cache_markers") or "auto",
                         cache_ttl=provider.get("cache_ttl") or "",
+                        model_cache_policy=model_cache_policy,
+                        model_cache_ttl=model_cache_ttl,
                     )
                 ]
 
@@ -98,6 +107,8 @@ class Router:
                 headers=_headers(row.get("headers")),
                 cache_markers=row.get("cache_markers") or "auto",
                 cache_ttl=row.get("cache_ttl") or "",
+                model_cache_policy=row.get("model_cache_policy") or "auto",
+                model_cache_ttl=row.get("model_cache_ttl") or "",
             )
             for row in rows
         ]

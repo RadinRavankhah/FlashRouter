@@ -289,3 +289,12 @@ auto-fallback observable in request logs → usage/cost shown. `ruff` clean, `py
    with separate JSONL/CSV downloads, and `flashrouter requests export|purge`.
    Clean-up writes both formats from one snapshot before deleting. 111 tests, ruff
    clean, `ui` builds.
+- (session 12) Per-model prompt-cache control. Added `models.cache_policy`
+   (`auto`/`force`/`off`) and `models.cache_ttl` (schema v7). Model `off` is a hard
+   off that ignores key/request overrides and removes `cache_control`,
+   client-supplied `prompt_cache_key`, cache-related HTTP headers
+   (`Cache-Control`/`Pragma`), `prompt-caching` beta flags, and account affinity
+   from the upstream request; `auto` inherits key/provider behavior and `force`
+   injects hints. Model TTL wins over key/provider TTL. Model settings flow through
+   combos, catalog names, and `provider/model` routes. Models page gained prompt
+   cache and TTL controls. 120 tests.

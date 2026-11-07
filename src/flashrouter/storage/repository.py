@@ -301,6 +301,8 @@ class Repository:
         price_out: float = 0,
         price_cache_in: float | None = None,
         price_cache_write: float | None = None,
+        cache_policy: str = "auto",
+        cache_ttl: str = "",
         source: str = "manual",
         enabled: bool = True,
     ) -> int:
@@ -310,13 +312,16 @@ class Repository:
         if existing:
             await self._write(
                 "UPDATE models SET display_name=?, price_in=?, price_out=?, "
-                "price_cache_in=?, price_cache_write=?, source=?, enabled=? WHERE id=?",
+                "price_cache_in=?, price_cache_write=?, cache_policy=?, cache_ttl=?, "
+                "source=?, enabled=? WHERE id=?",
                 (
                     display_name,
                     price_in,
                     price_out,
                     price_cache_in,
                     price_cache_write,
+                    cache_policy,
+                    cache_ttl,
                     source,
                     int(enabled),
                     existing["id"],
@@ -325,8 +330,8 @@ class Repository:
             return int(existing["id"])
         return await self._write(
             "INSERT INTO models(provider_id, model, display_name, price_in, price_out, "
-            "price_cache_in, price_cache_write, source, enabled, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "price_cache_in, price_cache_write, cache_policy, cache_ttl, source, enabled, "
+            "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 provider_id,
                 model,
@@ -335,6 +340,8 @@ class Repository:
                 price_out,
                 price_cache_in,
                 price_cache_write,
+                cache_policy,
+                cache_ttl,
                 source,
                 int(enabled),
                 now_iso(),
@@ -391,7 +398,7 @@ class Repository:
             ),
         )
 
-    async def update_model_pricing(
+    async def update_model(
         self,
         model_id: int,
         *,
@@ -399,13 +406,35 @@ class Repository:
         price_out: float,
         price_cache_in: float | None,
         price_cache_write: float | None = None,
+        cache_policy: str = "auto",
+        cache_ttl: str = "",
     ) -> bool:
         changed = await self._write(
             "UPDATE models SET price_in=?, price_out=?, price_cache_in=?, "
-            "price_cache_write=? WHERE id=?",
-            (price_in, price_out, price_cache_in, price_cache_write, model_id),
+            "price_cache_write=?, cache_policy=?, cache_ttl=? WHERE id=?",
+            (
+                price_in,
+                price_out,
+                price_cache_in,
+                price_cache_write,
+                cache_policy,
+                cache_ttl,
+                model_id,
+            ),
         )
         return changed > 0
+
+    async def get_model_cache(
+        self, provider_id: int, model: str
+    ) -> tuple[str, str]:
+        row = await self._fetchone(
+            "SELECT cache_policy, cache_ttl FROM models "
+            "WHERE provider_id=? AND model=?",
+            (provider_id, model),
+        )
+        if row is None:
+            return ("auto", "")
+        return (str(row["cache_policy"] or "auto"), str(row["cache_ttl"] or ""))
 
     async def get_model_price(
         self, provider_id: int, model: str
@@ -430,6 +459,7 @@ class Repository:
         rows = await self._fetchall(
             "SELECT m.model, p.id AS provider_id, p.name AS provider_name, "
             "p.base_url, p.protocol, p.headers, p.cache_markers, p.cache_ttl, "
+            "m.cache_policy AS model_cache_policy, m.cache_ttl AS model_cache_ttl, "
             "p.enabled AS provider_enabled, "
             "p.priority AS provider_priority "
             "FROM models m JOIN providers p ON p.id=m.provider_id "
@@ -448,8 +478,10 @@ class Repository:
             "SELECT t.id, t.combo_id, t.position, t.provider_id, t.model, t.enabled, "
             "p.name AS provider_name, p.base_url, p.protocol, p.headers, "
             "p.cache_markers, p.cache_ttl, "
+            "m.cache_policy AS model_cache_policy, m.cache_ttl AS model_cache_ttl, "
             "p.enabled AS provider_enabled "
             "FROM combo_targets t JOIN providers p ON p.id=t.provider_id "
+            "LEFT JOIN models m ON m.provider_id=t.provider_id AND m.model=t.model "
             "WHERE t.combo_id=? ORDER BY t.position",
             (combo_id,),
         )

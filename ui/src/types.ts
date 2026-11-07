@@ -79,6 +79,8 @@ export interface ModelEntry {
   price_out: number;
   price_cache_in: number | null;
   price_cache_write: number | null;
+  cache_policy: string;
+  cache_ttl: string;
   enabled: boolean;
   source: string;
 }

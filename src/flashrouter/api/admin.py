@@ -99,6 +99,8 @@ class ModelIn(BaseModel):
     price_out: float = 0
     price_cache_in: float | None = None
     price_cache_write: float | None = None
+    cache_policy: str = "auto"
+    cache_ttl: str = ""
 
 
 class ModelPriceIn(BaseModel):
@@ -106,6 +108,8 @@ class ModelPriceIn(BaseModel):
     price_out: float = 0
     price_cache_in: float | None = None
     price_cache_write: float | None = None
+    cache_policy: str = "auto"
+    cache_ttl: str = ""
 
 
 class SettingsIn(BaseModel):
@@ -620,6 +624,8 @@ async def create_model(request: Request, payload: ModelIn) -> dict[str, Any]:
         price_out=payload.price_out,
         price_cache_in=payload.price_cache_in,
         price_cache_write=payload.price_cache_write,
+        cache_policy=_cache_policy(payload.cache_policy),
+        cache_ttl=_cache_ttl(payload.cache_ttl),
         source="manual",
     )
     return {"id": model_id, "provider_id": payload.provider_id, "model": payload.model}
@@ -629,12 +635,14 @@ async def create_model(request: Request, payload: ModelIn) -> dict[str, Any]:
 async def update_model(
     request: Request, model_id: int, payload: ModelPriceIn
 ) -> dict[str, Any]:
-    changed = await _repo(request).update_model_pricing(
+    changed = await _repo(request).update_model(
         model_id,
         price_in=payload.price_in,
         price_out=payload.price_out,
         price_cache_in=payload.price_cache_in,
         price_cache_write=payload.price_cache_write,
+        cache_policy=_cache_policy(payload.cache_policy),
+        cache_ttl=_cache_ttl(payload.cache_ttl),
     )
     if not changed:
         raise bad_request("Model not found", param="model_id")

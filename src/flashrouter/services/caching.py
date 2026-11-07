@@ -72,11 +72,16 @@ def resolve_cache_decision(
     endpoint: str,
     provider: dict[str, Any] | None,
     key: dict[str, Any] | None,
+    model: dict[str, Any] | None = None,
     override: str | None = None,
 ) -> CacheDecision:
     """Resolve the cache behavior for one attempt.
 
-    Priority: request header override -> API key policy -> provider capability.
+    For non-``off`` model policies the priority is request header override ->
+    model ``force`` -> API key policy -> provider capability. A model policy of
+    ``off`` is a hard off: it ignores every other layer so no cache hints or
+    headers reach the provider.
+
     ``auto`` is cache-optimized for every target: explicit markers for
     Anthropic-capable providers, and routing hints/affinity for providers that
     cache automatically. ``off`` strips markers and disables all optimizations.
@@ -84,21 +89,33 @@ def resolve_cache_decision(
     if endpoint not in _CACHEABLE_ENDPOINTS:
         return CacheDecision(OFF, False, False, False, False, TTL_5M, TTL_5M)
 
-    policy = str(override or "").strip().lower()
-    if policy not in MODES:
-        policy = str((key or {}).get("cache_policy") or AUTO).strip().lower()
-    if policy not in MODES:
-        policy = AUTO
+    model_policy = str((model or {}).get("cache_policy") or AUTO).strip().lower()
+    if model_policy not in MODES:
+        model_policy = AUTO
 
     markers = str((provider or {}).get("cache_markers") or AUTO).strip().lower()
     if markers not in PROVIDER_MARKERS:
         markers = AUTO
     ttl = normalize_ttl(
-        (key or {}).get("cache_ttl") or (provider or {}).get("cache_ttl")
+        (model or {}).get("cache_ttl")
+        or (key or {}).get("cache_ttl")
+        or (provider or {}).get("cache_ttl")
     )
     protocol = str((provider or {}).get("protocol") or "")
     anthropic = protocol == "anthropic-messages"
     prompt_key = endpoint in _PROMPT_KEY_ENDPOINTS
+
+    if model_policy == OFF:
+        return CacheDecision(OFF, False, False, True, False, ttl, TTL_5M)
+
+    policy = str(override or "").strip().lower()
+    if policy not in MODES:
+        if model_policy == FORCE:
+            policy = FORCE
+        else:
+            policy = str((key or {}).get("cache_policy") or AUTO).strip().lower()
+    if policy not in MODES:
+        policy = AUTO
 
     if policy == OFF:
         return CacheDecision(OFF, False, False, True, False, ttl, TTL_5M)
@@ -194,6 +211,16 @@ def body_has_markers(body: dict[str, Any]) -> bool:
         for block in _message_blocks(message):
             if block.get("cache_control"):
                 return True
+    for block in _as_list(body.get("input")):
+        if isinstance(block, dict):
+            if block.get("cache_control"):
+                return True
+            content = block.get("content")
+            if isinstance(content, dict) and content.get("cache_control"):
+                return True
+            for part in _as_list(content):
+                if isinstance(part, dict) and part.get("cache_control"):
+                    return True
     return False
 
 
@@ -205,11 +232,12 @@ def _strip_tool(tool: dict[str, Any]) -> None:
 
 
 def strip_cache_markers(body: dict[str, Any]) -> dict[str, Any]:
-    """Remove every ``cache_control`` field from an OpenAI/Anthropic body."""
-    if not body_has_markers(body):
+    """Remove every cache hint (markers and ``prompt_cache_key``) from a body."""
+    if not body_has_markers(body) and "prompt_cache_key" not in body:
         return body
     result = copy.deepcopy(body)
     result.pop("cache_control", None)
+    result.pop("prompt_cache_key", None)
     for block in _as_list(result.get("system")):
         if isinstance(block, dict):
             block.pop("cache_control", None)
@@ -226,6 +254,16 @@ def strip_cache_markers(body: dict[str, Any]) -> dict[str, Any]:
             for block in content:
                 if isinstance(block, dict):
                     block.pop("cache_control", None)
+    for block in _as_list(result.get("input")):
+        if isinstance(block, dict):
+            block.pop("cache_control", None)
+            content = block.get("content")
+            if isinstance(content, dict):
+                content.pop("cache_control", None)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        part.pop("cache_control", None)
     return result
 
 

@@ -321,6 +321,10 @@ class Engine:
                         "cache_markers": candidate.cache_markers,
                         "cache_ttl": candidate.cache_ttl,
                     },
+                    model={
+                        "cache_policy": candidate.model_cache_policy,
+                        "cache_ttl": candidate.model_cache_ttl,
+                    },
                     key=key,
                     override=cache_override,
                 )
@@ -487,6 +491,7 @@ class Engine:
             stream=stream,
             dialect=dialect,
             incoming=incoming_headers,
+            allow_cache_headers=cache_decision.active,
         )
 
         def build_request(payload: dict[str, Any]) -> httpx.Request:

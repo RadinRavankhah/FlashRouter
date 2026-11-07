@@ -84,6 +84,70 @@ def test_resolve_provider_opt_in_and_key_override():
     assert not off.active and not off.inject and off.strip
 
 
+def test_model_policy_off_is_hard_off():
+    for override in ("force", "auto", "off", None):
+        decision = resolve_cache_decision(
+            endpoint="chat/completions",
+            provider={"protocol": "openai-chat", "cache_markers": "anthropic"},
+            key={"cache_policy": "force"},
+            model={"cache_policy": "off"},
+            override=override,
+        )
+        assert not decision.active
+        assert not decision.inject
+        assert decision.strip
+        assert not decision.send_cache_key
+
+
+def test_model_policy_force_and_auto():
+    forced = resolve_cache_decision(
+        endpoint="chat/completions",
+        provider={"protocol": "openai-chat", "cache_markers": "none"},
+        key={"cache_policy": "off"},
+        model={"cache_policy": "force"},
+    )
+    assert forced.active and forced.inject
+
+    inherited = resolve_cache_decision(
+        endpoint="chat/completions",
+        provider={"protocol": "openai-chat"},
+        key={"cache_policy": "off"},
+        model={"cache_policy": "auto"},
+    )
+    assert not inherited.active and inherited.strip
+
+    request_off = resolve_cache_decision(
+        endpoint="chat/completions",
+        provider={"protocol": "openai-chat"},
+        key={"cache_policy": "auto"},
+        model={"cache_policy": "force"},
+        override="off",
+    )
+    assert not request_off.active
+
+
+def test_model_ttl_wins_over_key_and_provider():
+    decision = resolve_cache_decision(
+        endpoint="messages",
+        provider={"protocol": "anthropic-messages", "cache_ttl": "5m"},
+        key={"cache_policy": "auto", "cache_ttl": "5m"},
+        model={"cache_policy": "auto", "cache_ttl": "1h"},
+    )
+    assert decision.head_ttl == "1h"
+
+
+def test_strip_removes_prompt_cache_key():
+    body = {
+        "prompt_cache_key": "client-key",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    out = strip_cache_markers(body)
+
+    assert out is not body
+    assert "prompt_cache_key" not in out
+    assert body["prompt_cache_key"] == "client-key"
+
+
 def test_prompt_cache_key_is_stable_and_opaque():
     first = prompt_cache_key("h:abc")
     assert first == prompt_cache_key("h:abc")

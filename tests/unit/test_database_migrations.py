@@ -90,6 +90,7 @@ def test_cache_columns_and_pricing_are_added(tmp_path: Path):
     assert "cache_read_tokens" in account_columns
     assert "price_cache_in" in model_columns
     assert "price_cache_write" in model_columns
+    assert {"cache_policy", "cache_ttl"} <= model_columns
     assert {"cache_markers", "cache_ttl"} <= provider_columns
     assert {"cache_policy", "cache_ttl"} <= key_columns
 
@@ -136,6 +137,47 @@ def test_v4_database_upgrades_with_cache_policy_defaults(tmp_path: Path):
     assert provider["cache_ttl"] == ""
     assert key["cache_policy"] == "auto"
     assert key["cache_ttl"] == ""
+
+
+def test_v6_database_upgrades_with_model_cache_defaults(tmp_path: Path):
+    path = tmp_path / "flashrouter.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT)"
+    )
+    connection.execute(
+        "CREATE TABLE flashrouter_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    connection.execute(
+        "INSERT INTO flashrouter_meta(key, value) VALUES ('schema', 'flashrouter')"
+    )
+    for version in range(1, 7):
+        connection.executescript(MIGRATIONS[version])
+        connection.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?, '2020-01-01')",
+            (version,),
+        )
+    connection.execute(
+        "INSERT INTO providers(name, base_url, created_at, updated_at) "
+        "VALUES ('p', 'https://p.test/v1', 'x', 'x')"
+    )
+    connection.execute(
+        "INSERT INTO models(provider_id, model, created_at) VALUES (1, 'gpt', 'x')"
+    )
+    connection.commit()
+    connection.close()
+
+    _table_names(path)
+
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    try:
+        model = dict(connection.execute("SELECT * FROM models").fetchone())
+    finally:
+        connection.close()
+
+    assert model["cache_policy"] == "auto"
+    assert model["cache_ttl"] == ""
 
 
 def test_v2_database_upgrades_to_v3(tmp_path: Path):

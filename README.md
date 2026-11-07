@@ -318,6 +318,7 @@ FlashRouter is cache-optimized by default for every provider:
 | Layer | Setting | Default |
 |---|---|---|
 | Request header | `x-flashrouter-cache: auto \| force \| off` (cacheable endpoints) | inherit |
+| Model | **Prompt cache** (Auto / Force / Off) + **Cache TTL** | `auto` |
 | API key | **Prompt cache** + **Cache TTL** (Auto / Force / Off) | `auto` |
 | Provider | **Cache markers** (`auto`, `anthropic`, `none`) + **Cache TTL** | `auto` |
 
@@ -328,9 +329,12 @@ FlashRouter is cache-optimized by default for every provider:
   provider, using that provider's request shape. Only enable it for upstreams
   that preserve `cache_control`.
 - `off` removes markers and disables the routing hint and account affinity.
+- A model set to `off` is a hard off: it wins over key and request overrides, and
+  FlashRouter also removes cache-related HTTP headers and any client-supplied
+  `prompt_cache_key` from the upstream request.
 - `1h` TTL survives long agent turns; it applies to the head anchors (system and
   tools). The tail marker stays at 5 minutes. The default overall TTL is 5
-  minutes.
+  minutes. Model TTL wins over key and provider TTL.
 
 FlashRouter pins a conversation to the account that served its previous request
 for 15 minutes (1 hour when explicit 1h marker injection is active), keyed by

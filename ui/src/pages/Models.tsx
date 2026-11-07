@@ -22,6 +22,8 @@ interface ModelForm {
   price_out: string;
   price_cache_in: string;
   price_cache_write: string;
+  cache_policy: string;
+  cache_ttl: string;
 }
 
 const EMPTY_FORM: ModelForm = {
@@ -32,6 +34,8 @@ const EMPTY_FORM: ModelForm = {
   price_out: "0",
   price_cache_in: "",
   price_cache_write: "",
+  cache_policy: "auto",
+  cache_ttl: "",
 };
 
 function price(value: number | null): string {
@@ -130,6 +134,8 @@ export default function Models() {
       price_cache_in: model.price_cache_in === null ? "" : String(model.price_cache_in),
       price_cache_write:
         model.price_cache_write === null ? "" : String(model.price_cache_write),
+      cache_policy: model.cache_policy,
+      cache_ttl: model.cache_ttl,
     });
     setEditing(model);
   };
@@ -152,6 +158,8 @@ export default function Models() {
           price_out: numberOrZero(form.price_out),
           price_cache_in: optionalNumber(form.price_cache_in),
           price_cache_write: optionalNumber(form.price_cache_write),
+          cache_policy: form.cache_policy,
+          cache_ttl: form.cache_ttl,
         });
         toast("Pricing updated");
       } else {
@@ -163,6 +171,8 @@ export default function Models() {
           price_out: numberOrZero(form.price_out),
           price_cache_in: optionalNumber(form.price_cache_in),
           price_cache_write: optionalNumber(form.price_cache_write),
+          cache_policy: form.cache_policy,
+          cache_ttl: form.cache_ttl,
         });
         toast("Model added");
       }
@@ -192,7 +202,7 @@ export default function Models() {
     <>
       <PageHeader
         title="Models"
-        subtitle="Per-model pricing drives the estimated cost. Set a cache-read price to reflect provider prompt caching."
+        subtitle="Per-model pricing drives the estimated cost. Prompt cache controls whether FlashRouter sends cache hints for this model."
         actions={
           <Button variant="primary" onClick={openCreate}>
             <Plus size={14} /> Add model
@@ -255,6 +265,7 @@ export default function Models() {
                     <th>Output / 1M</th>
                     <th>Cached / 1M</th>
                     <th>Cache write / 1M</th>
+                    <th>Prompt cache</th>
                     <th>Source</th>
                     <th />
                   </tr>
@@ -276,6 +287,10 @@ export default function Models() {
                         {model.price_cache_write === null
                           ? "2x input"
                           : price(model.price_cache_write)}
+                      </td>
+                      <td className={model.cache_policy === "off" ? "muted" : ""}>
+                        {model.cache_policy}
+                        {model.cache_ttl ? ` · ${model.cache_ttl}` : ""}
                       </td>
                       <td className="muted">{model.source}</td>
                       <td>
@@ -325,7 +340,7 @@ export default function Models() {
 
       {dialogOpen && (
         <Modal
-          title={editing ? "Edit pricing" : "Add model"}
+          title={editing ? "Edit model" : "Add model"}
           onClose={close}
           footer={
             <>
@@ -417,6 +432,36 @@ export default function Models() {
                 }
                 placeholder="2x input"
               />
+            </Field>
+            <Field
+              label="Prompt cache"
+              hint="Off guarantees no cache markers, prompt_cache_key, or cache headers reach the provider."
+            >
+              <select
+                value={form.cache_policy}
+                onChange={(event) =>
+                  setForm({ ...form, cache_policy: event.target.value })
+                }
+              >
+                <option value="auto">Auto — inherit key/provider</option>
+                <option value="force">Force — inject cache hints</option>
+                <option value="off">Off — disable cache entirely</option>
+              </select>
+            </Field>
+            <Field
+              label="Cache TTL"
+              hint="Applies to this model. Default is 5 minutes."
+            >
+              <select
+                value={form.cache_ttl}
+                onChange={(event) =>
+                  setForm({ ...form, cache_ttl: event.target.value })
+                }
+              >
+                <option value="">Default</option>
+                <option value="5m">5 minutes</option>
+                <option value="1h">1 hour</option>
+              </select>
             </Field>
             <p className="muted" style={{ fontSize: 12 }}>
               Cached tokens are already included in the reported input count; FlashRouter bills the
