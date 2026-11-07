@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "flashrouter"
 dynamic = ["version"]
-description = "A local-first, OpenAI-compatible LLM router with auto-fallback"
+description = "A local-first LLM router exposing OpenAI-compatible and Anthropic-compatible endpoints with auto-fallback"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
